@@ -4,12 +4,23 @@ import asyncio as aio
 from collections import deque
 import sys
 
-if sys.platform == "esp32":
+try:  # The real LEDs (or a simulator's stand-in for them)
     import machine
     import neopixel
-else:
+except ImportError:  # e.g. CPython: keep the LED values in a list instead
     machine = None
     neopixel = None
+
+
+class _PixelBuffer(list):
+    """Stands in for neopixel.NeoPixel when there are no LEDs."""
+
+    def fill(self, val):
+        for i in range(len(self)):
+            self[i] = val
+
+    def write(self):
+        pass
 
 NUM_LEDS   = 8
 WS2812_PIN = 38
@@ -23,14 +34,12 @@ SUBMENU_SELECTED_COLORS = MENU_BACKGROUND_COLORS   ## same for consistency?
 class LedBar:
     def __init__(self) -> None:
         print("Starting LED manager")
-        if sys.platform == "esp32":
-            print("Running on esp32, using Neopixel library")
+        if neopixel:
+            print("Using Neopixel library")
             self.leds = neopixel.NeoPixel(pin=machine.Pin(WS2812_PIN), n=NUM_LEDS, bpp=3)
         else:  # For debugging in CPython
             print("Using simulated LED buffer in a list")
-            self.leds = []
-            for i in range(NUM_LEDS):
-                self.leds.append([0, 0, 0])
+            self.leds = _PixelBuffer([0, 0, 0] for _ in range(NUM_LEDS))
         self.output = []
 
         # LED pattern sequencer
@@ -102,7 +111,7 @@ class LedBar:
 
     def write(self):
         """Write the buffered values out to the actual LEDs"""
-        if sys.platform == "esp32":
+        if neopixel:
             self.leds.write()  # pyright: ignore[reportAttributeAccessIssue]
         return [(led[0], led[1], led[2]) for led in self.leds]
 
@@ -120,7 +129,7 @@ class LedBar:
                 for new_leds, sleep_ms in sequence_generator:
                     for idx, led in enumerate(new_leds):
                         self.leds[idx] = led
-                    if sys.platform == "esp32":
+                    if neopixel:
                         self.leds.write()  # pyright: ignore[reportAttributeAccessIssue]
                         await aio.sleep_ms(int(sleep_ms))
                     else:  # Running in cpython
@@ -128,7 +137,7 @@ class LedBar:
                     if self.sequence_paused or self._sequence_updated.is_set():
                         break
             else:
-                if sys.platform == "esp32":
+                if neopixel:
                     await aio.sleep_ms(sleep_ms)
                 else:  # Running in cpython, sleep takes float(s)
                     await aio.sleep(sleep_ms / 1000.0)

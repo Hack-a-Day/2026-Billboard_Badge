@@ -1,0 +1,10 @@
+#!/bin/sh
+# Runs the badge simulator. Options are passed on to sim.py (see SIMULATOR.md).
+# Set LVGL_MICROPY to the lvgl_micropython Unix binary if it isn't at the default path
+# (an lvgl_micropython checkout in this directory, built as SIMULATOR.md describes).
+#
+# The heap is large because the window's frame buffers come from it (two of them,
+# 3 bytes per window pixel), on top of the firmware's own ~10 MB.
+SIM_DIR="$(dirname "$0")"
+LVGL_MICROPY="${LVGL_MICROPY:-$SIM_DIR/lvgl_micropython/build/lvgl_micropy_unix}"
+exec "$LVGL_MICROPY" -X heapsize=160M "$SIM_DIR/sim.py" "$@"

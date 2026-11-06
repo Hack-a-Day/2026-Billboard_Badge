@@ -35,7 +35,7 @@ class Sao:
             id=SAO_I2C_BUS, addr=self.address, scl=SAO_I2C_SCL, sda=SAO_I2C_SDA
         )
 
-    def readfrom(self, nbytes, stop=True, /):
+    def readfrom(self, nbytes, stop=True):
         if self.address is None:
             raise ValueError("No address set, unable to read from target")
         return i2c.readfrom(self.address, nbytes, stop)

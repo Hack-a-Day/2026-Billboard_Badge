@@ -11,6 +11,15 @@ from lib.led_bar import leds
 
 # MENU_TIMEOUT_MILLISECONDS = 1000
 
+# Menu order, by app name. Apps not listed here come after these, sorted by name.
+APP_ORDER = [
+    "Workshops",
+    "Sat Talks",
+    "Sun Talks",
+    "Gallery",
+    "Nametag",
+]
+
 
 APPMOD_DENYLIST = {
     "__init__",
@@ -28,7 +37,8 @@ class AppSwitcher:
 
         # Discover and load apps
         app_mods = []
-        for filename, _, _, _ in os.ilistdir("/apps"):  # pyright: ignore[reportAssignmentType]
+        for entry in os.ilistdir("/apps"):  # 3- or 4-tuples, depending on the filesystem
+            filename = entry[0]
             if not filename.endswith(".py") or filename.startswith("_"):
                 continue
             app_modname = filename.split(".")[0]
@@ -59,6 +69,15 @@ class AppSwitcher:
             except Exception as exc:
                 print(f"Failed to load app module: {appmod}")
                 sys.print_exception(exc)
+
+        # Modules and classes are found in an arbitrary order, so sort them
+        def menu_position(app):
+            if app.name in APP_ORDER:
+                return (APP_ORDER.index(app.name), "")
+            return (len(APP_ORDER), app.name)
+
+        self.apps.sort(key=menu_position)
+        print(f"Menu order: {[app.name for app in self.apps]}")
 
         try:
             apps_file = open("/data/app_list", "r+b")
