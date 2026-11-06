@@ -22,10 +22,14 @@ The row of WS2812-compatible LEDs is on GPIO38
 ## Buttons
 
 * Menu +/-: GPIO40 / GPIO15
-* User A/B: GPIO39 / GPIO15
+* User A/B: GPIO39 / GPIO16
 
 # Applications
 In its out of the box configuration the badge can show the 2026 Supercon schedule, act as a digital name tag, and cycle through a built-in collection of art from Hackaday's incredible Art Director Joe Kim. If you come up with additional apps that you'd like to share, feel free to make a pull request.
+
+The Sketch app turns the badge into a knob-drawing toy: two AS5600 magnetic encoder SAOs (analog output on each SAO's GPIO1) move the pen, and an optional MPU6050 on the SAO I2C bus lets you shake it to erase. See `firmware/badge/apps/sketch.py` for the wiring.
+
+Apps that redraw often can use the fast refresh: `display.update(fast=True)` takes a few seconds instead of about 35, but only does black and white well. `keep_red=True` leaves red already on the panel untouched. See the top of `firmware/badge/lib/epd.py`.
 
 # Displaying Images
 

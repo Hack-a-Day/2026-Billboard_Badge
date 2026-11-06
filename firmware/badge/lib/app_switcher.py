@@ -6,7 +6,7 @@ import sys
 import btree
 
 from apps.base_app import BaseApp
-from lib.button import MenuMinus, MenuPlus, UserA, UserB, PRESSED_READ
+from lib.button import MenuMinus, MenuPlus, UserA, UserB, flush_all
 from lib.led_bar import leds
 
 # MENU_TIMEOUT_MILLISECONDS = 1000
@@ -74,11 +74,14 @@ class AppSwitcher:
 
 
     async def arun(self):
+        shown_idx = None  # what the LEDs currently show; redraw only on change
         while True:
             if self.selecting_mode:
-               
+
                 ## Display current app from all installed apps
-                leds.menu_display(self.selection_idx, len(self.apps))
+                if shown_idx != self.selection_idx:
+                    leds.menu_display(self.selection_idx, len(self.apps))
+                    shown_idx = self.selection_idx
 
                 if MenuPlus.pressed():
                     self.selection_idx = (self.selection_idx + 1) % len(self.apps)
@@ -94,18 +97,20 @@ class AppSwitcher:
                     print(f"Switching to {self.apps[self.selection_idx].name}")
                     self.active_idx = self.selection_idx
                     self.apps[self.active_idx].launched = True
-                    leds.clear_sequence()
-                    leds.fill((0, 0, 0))
-                    leds.write()
+                    leds.clear_sequence()  # also un-pauses, so apps can animate
+                    leds.off()
+                    flush_all()  # the launching press shouldn't reach the app
                     self.selecting_mode = False
+                    shown_idx = None
                 await aio.sleep_ms(10)
             else:
                 if MenuMinus.pressed() or MenuPlus.pressed():
                     self.selection_idx = self.active_idx
                     self.selecting_mode = True
-                    ## Reset pressed state so that button doesn't advance menu, just enters menu state
-                    MenuMinus._pressed_state = PRESSED_READ
-                    MenuPlus._pressed_state = PRESSED_READ
+                    ## Drop pending presses so the button that opened the menu
+                    ## doesn't also move/launch, and stale app presses can't leak in
+                    flush_all()
+                    shown_idx = None
                     print("Activated app switching")
                 await self.apps[self.active_idx].arun()
                 await aio.sleep_ms(0)
