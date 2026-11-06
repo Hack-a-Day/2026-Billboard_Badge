@@ -18,6 +18,18 @@ _NAME_BOTTOM = 557
 _NAME_DY = (_NAME_TOP + _NAME_BOTTOM) // 2 - display_height // 2
 
 
+def _discard_pending_redraws(disp):
+    """Forget the areas LVGL is waiting to redraw, without drawing them."""
+    try:
+        disp.inv_p = 0
+    except AttributeError:
+        # LVGL bindings that don't expose the display's private fields (e.g. the
+        # simulator's): redraw them into a flush that throws the pixels away.
+        disp.set_flush_cb(lambda d, area, px: d.flush_ready())
+        lvgl.refr_now(disp)
+        disp.set_flush_cb(display._lv_flush)
+
+
 class NametagApp(BaseApp):
     def __init__(self, name: str | None = None) -> None:
         self.name = "Nametag"
@@ -61,7 +73,7 @@ class NametagApp(BaseApp):
             lvgl.screen_load(scr)
             scr.update_layout()
             # screen_load dirties the whole panel. Keep the PNG everywhere else.
-            display.lv_display.inv_p = 0
+            _discard_pending_redraws(display.lv_display)
             plate.invalidate()
             lvgl.refr_now(display.lv_display)
             display.update()
