@@ -27,6 +27,9 @@ The row of WS2812-compatible LEDs is on GPIO38
 # Applications
 In its out of the box configuration the badge can show the 2026 Supercon schedule, act as a digital name tag, and cycle through a built-in collection of art from Hackaday's incredible Art Director Joe Kim. If you come up with additional apps that you'd like to share, feel free to make a pull request.
 
+Community apps:
+* **Quick Draw** (`firmware/badge/apps/duel.py`): a two-player reaction duel. A and B are the players; wait for the LED bar to flash green, then press first. First to 4 wins, and the e-paper shows a scoreboard with the all-time fastest draws.
+
 # Displaying Images
 
 The badge's display only supports three colors: white, black, red. Shading between those needs to be implemented by dithering pixels of those colors together. Unlike LCD, CRT, or other displays you may be used to, you cannot set multiple colors within a single pixel, each pixel is only one of the three colors.
