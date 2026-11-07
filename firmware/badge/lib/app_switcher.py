@@ -25,6 +25,7 @@ class AppSwitcher:
         self.active_idx = initial_idx
         self.selecting_mode = True
         self.selection_idx = initial_idx
+        self.app_launched = False
 
         # Discover and load apps
         app_mods = []
@@ -72,6 +73,9 @@ class AppSwitcher:
         apps_db.close()
         apps_file.close()
 
+    def battery_icon_wanted(self) -> bool:
+        """Boot splash screens stay clean, after that the active app decides."""
+        return self.app_launched and self.apps[self.active_idx].show_battery_icon
 
     async def arun(self):
         while True:
@@ -93,6 +97,7 @@ class AppSwitcher:
                 if UserA.pressed() or UserB.pressed():
                     print(f"Switching to {self.apps[self.selection_idx].name}")
                     self.active_idx = self.selection_idx
+                    self.app_launched = True
                     self.apps[self.active_idx].launched = True
                     leds.clear_sequence()
                     leds.fill((0, 0, 0))
