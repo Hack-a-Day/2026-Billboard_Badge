@@ -123,6 +123,10 @@ class EPaperDisplay:
         # Is the display done updating? Start set since the display is not updating before boot.
         self._display_updated = aio.Event()
         self._display_updated.set()
+
+        self.overlay = None
+        """Stamped over each frame as it's sent, without touching the app's image.
+        Needs wanted(), draw(black, red), and a byte-aligned x, y, w, h area."""
         gc.collect()
 
         # Set up lvgl
@@ -188,6 +192,44 @@ class EPaperDisplay:
         """Is the display done updating?"""
         return self._display_updated.is_set()
 
+    def is_busy(self):
+        """Is a frame waiting to be sent, or being sent, to the panel?"""
+        return self._framebuffer_ready.is_set() or not self.is_done_updating()
+
+    def _overlay_rows(self, overlay):
+        """Yield each row of the overlay's area as (framebuffer, start offset)"""
+        for fb in (self._framebuffer_black, self._framebuffer_red):
+            for row in range(overlay.y, overlay.y + overlay.h):
+                yield fb, row * display_width_bytes + overlay.x // 8
+
+    def _stamp_overlay(self):
+        """Draw the overlay, returning what it covered for _restore_overlay()"""
+        overlay = self.overlay
+        if overlay is None or not overlay.wanted():
+            return None
+        width = overlay.w // 8
+        saved = bytearray(2 * width * overlay.h)
+        saved_view = memoryview(saved)
+        i = 0
+        for fb, offset in self._overlay_rows(overlay):
+            saved_view[i : i + width] = memoryview(fb)[offset : offset + width]
+            i += width
+        try:
+            overlay.draw(self.black, self.red)
+        except Exception as ex:
+            # A failed overlay shouldn't take the whole display down with it.
+            print(f"Display overlay hit an exception {ex}")
+        return saved
+
+    def _restore_overlay(self, saved):
+        overlay = self.overlay
+        width = overlay.w // 8
+        saved_view = memoryview(saved)
+        i = 0
+        for fb, offset in self._overlay_rows(overlay):
+            memoryview(fb)[offset : offset + width] = saved_view[i : i + width]
+            i += width
+
     def draw_image(self, image, height: int, width: int, row: int = 0, col: int = 0):
         for img_r in range(height):
             for img_c in range(width):
@@ -212,7 +254,12 @@ class EPaperDisplay:
         red_right = bytearray(half_frame_one_color_size)
         while True:
             if self._framebuffer_ready.is_set():
+                # Cleared here, not after the refresh, so an update() made during
+                # the refresh queues the next frame instead of being lost.
+                self._framebuffer_ready.clear()
                 self._display_updated.clear()
+                # No awaits until the restore, so no app sees the stamped image.
+                overlay_saved = self._stamp_overlay()
                 fbk = memoryview(self._framebuffer_black)
                 fbr = memoryview(self._framebuffer_red)
                 for row in range(display_height):
@@ -244,10 +291,12 @@ class EPaperDisplay:
                         row * display_width_bytes + display_half_width_bytes : (row + 1)
                         * display_width_bytes
                     ]
+                if overlay_saved is not None:
+                    self._restore_overlay(overlay_saved)
                 await self.global_update(black_left, red_left, black_right, red_right)
-                self._framebuffer_ready.clear()
                 gc.collect()
-                self._display_updated.set()
+                if not self._framebuffer_ready.is_set():
+                    self._display_updated.set()
             await aio.sleep_ms(100)
 
     async def global_update(

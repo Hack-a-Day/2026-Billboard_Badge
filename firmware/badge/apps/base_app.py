@@ -10,6 +10,10 @@ class BaseApp:
     Exists to make it easier to make app-generic behaviors.
     """
 
+    show_battery_icon = True
+    """Set False to keep the battery icon off your screen. Set it on the class to
+    always hide it, or on self at any time. It applies from the next display update."""
+
     def __init__(self, name: str | None = None) -> None:
         self.name = name or self.__class__.__name__
         self.sleep_ms = 100

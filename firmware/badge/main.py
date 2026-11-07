@@ -12,6 +12,7 @@ try:
     time.sleep(0.5)
     print("Importing libraries...")
     from lib.app_switcher import switcher
+    from lib.battery import battery_icon, monitor as battery_monitor
     from lib.button import scan as button_scan, UserA, UserB
     from lib.epd import display
     from lib.led_bar import leds
@@ -57,10 +58,14 @@ async def main():
 
     print("Initializing main...")
 
+    battery_icon.wanted = switcher.battery_icon_wanted
+    display.overlay = battery_icon
+
     _button_task = aio.create_task(button_scan())
     _display_task = aio.create_task(display.run())
     _led_task = aio.create_task(leds.update())
     _apps_task = aio.create_task(switcher.arun())
+    _battery_task = aio.create_task(battery_monitor())
 
     print("Running main loop...")
     while True:
