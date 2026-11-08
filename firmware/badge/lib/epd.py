@@ -180,6 +180,11 @@ class EPaperDisplay:
         self._supports_grayscale = self._reverse_fb_bits
         self._requested_grayscale = False
         self._requested_mixed = False
+        self._requested_fast = False
+        self._requested_pulls = 3
+        # lib.epd_fast state, created on first use; _fast_ok is None until tried
+        self._fast = None
+        self._fast_ok = None
         self._render_grayscale = False
         self._render_mixed = False
         # E-paper keeps its image across reboot; its initial pigments are unknown.
@@ -264,11 +269,29 @@ class EPaperDisplay:
     def supports_grayscale(self):
         return self._supports_grayscale
 
-    def _check_modes(self, grayscale, mixed):
+    @property
+    def supports_fast(self):
+        if not self._supports_grayscale:
+            return False
+        if self._fast_ok is None:
+            try:
+                from lib import epd_fast  # noqa: F401
+                self._fast_ok = True
+            except Exception as ex:
+                print("EPD fast refresh unavailable:", ex)
+                self._fast_ok = False
+        # Repeated failures: stop, so apps fall back instead of retrying forever.
+        return self._fast_ok and not (self._fast is not None and self._fast.failures >= 2)
+
+    def _check_modes(self, grayscale, mixed, fast=False):
         if grayscale and mixed:
             raise ValueError("Choose grayscale or mixed mode")
         if (grayscale or mixed) and not self.supports_grayscale:
             raise ValueError("Grayscale refresh requires a B1 panel")
+        if fast and (grayscale or mixed):
+            raise ValueError("Fast refresh is black and white only")
+        if fast and not self.supports_fast:
+            raise ValueError("Fast refresh requires a B1 panel")
 
     def refresh_lvgl(self, grayscale=False, mixed=False):
         """Render LVGL into the framebuffers; use the same mode in update().
@@ -287,16 +310,29 @@ class EPaperDisplay:
             self._render_grayscale = previous_grayscale
             self._render_mixed = previous_mixed
 
-    def update(self, grayscale=False, mixed=False):
-        """Queue the latest frame; gray waveforms are opt-in and require B1.
+    def update(self, grayscale=False, mixed=False, fast=False, pulls=3):
+        """Queue the latest frame; gray and fast waveforms are opt-in and require B1.
 
         grayscale=True uses 00 white, 01 black, 10 gray (no red).
         mixed=True uses 00 white, 01 black, 10 red, 11 gray in software.
         Match the mode used by refresh_lvgl()/draw_png().
+
+        fast=True redraws only what changed since the last frame, in black and
+        white, in about 1.1 s per pull instead of ~34 s. It cannot make red: red
+        already on the panel is held untouched, and a frame whose red differs from
+        the last full refresh is shown with a full refresh instead.
+        pulls is how many ~1.1 s drive steps to give it: 1 is quick but pale, 3
+        is solid black. Pixels given fewer than 3 are topped up by the next
+        frame. See lib/epd_fast.py. The first fast frame at boot, or after a gray
+        frame, is one ordinary slow refresh.
         """
-        self._check_modes(grayscale, mixed)
+        self._check_modes(grayscale, mixed, fast)
+        if not 1 <= pulls <= 6:
+            raise ValueError("pulls must be 1 to 6")
         self._requested_grayscale = grayscale
         self._requested_mixed = mixed
+        self._requested_fast = fast
+        self._requested_pulls = pulls
         self._display_updated.clear()
         self._framebuffer_ready.set()
 
@@ -352,6 +388,9 @@ class EPaperDisplay:
                 grayscale = self._requested_grayscale
                 mixed = self._requested_mixed
                 self._display_updated.clear()
+                if self._requested_fast:
+                    await self._run_fast(self._requested_pulls)
+                    continue
                 t0 = time.ticks_ms()
                 if self._reverse_fb_bits and not (grayscale or mixed):
                     _fast_split_and_reverse(
@@ -368,6 +407,7 @@ class EPaperDisplay:
                         self._framebuffer_red, red_left, red_right
                     )
                 print("Viper split & reverse ms:", time.ticks_diff(time.ticks_ms(), t0))
+                await self._fast_leave(grayscale or mixed)
 
                 leds.clear()
                 self._refreshing_hw = True
@@ -400,7 +440,27 @@ class EPaperDisplay:
                 gc.collect()
                 if not self._framebuffer_ready.is_set():
                     self._display_updated.set()
+            if self._fast is not None and self._fast.open and not self._framebuffer_ready.is_set():
+                from lib import epd_fast
+                await epd_fast.idle_check(self)
             await aio.sleep_ms(50)
+
+    async def _run_fast(self, pulls):
+        from lib import epd_fast
+        await epd_fast.fast_update(self, pulls)
+        if not self._framebuffer_ready.is_set():
+            self._display_updated.set()
+
+    async def _fast_leave(self, inexact):
+        # Before an ordinary refresh: note what it will show, for the next fast
+        # frame to diff against, and close the fast session.
+        if self._fast_ok is False:
+            return
+        try:
+            from lib import epd_fast
+            await epd_fast.leave(self, inexact)
+        except Exception as ex:
+            print("EPD fast: bookkeeping failed:", ex)
 
     async def global_update(
         self,

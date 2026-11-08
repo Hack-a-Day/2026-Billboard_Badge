@@ -24,6 +24,31 @@ Flashing the pre-built bin files: From `firmware/` run `python -m esptool --chip
 Copy the files from `firmware/lv_files/` to their matching paths, ex: `lv_files/foo/` -> `lv_micropython/foo/`.
 
 
+## Optional B1 fast partial refresh
+
+`display.update(fast=True, pulls=3)` redraws only the pixels that changed since
+the last frame, in black and white, using the 400-byte short waveform instead of the
+panel's own ~34 s one. A frame costs about 1.1 s per pull. Draw as usual, then:
+
+```python
+if display.supports_fast:
+    display.clear()
+    ...                                  # draw the whole frame
+    display.update(fast=True, pulls=1)   # quick and pale
+    ...
+    display.update(fast=True, pulls=3)   # solid black
+```
+
+Pixels given fewer than 3 pulls are topped up by the next fast frame, so
+quick frames followed by a 3-pull frame leave a clean picture. The panel session
+stays open between frames and is closed after 2 s idle, or before any ordinary
+update. Fast frames cannot make red, but they hold red that is already on the
+panel: red pixels from the last full refresh are never driven, so a red banner
+survives. A frame whose red plane differs from the last full refresh is shown with a
+full refresh instead, as is the first fast frame at boot or after a gray frame.
+The details are in `lib/epd_fast.py`. It runs on a B1 badge at about 1.2 s per pull;
+there `BUSY2` never goes high, so only `BUSY1` is watched.
+
 ## Optional B1 gray support
 
 Ordinary `display.update()`, `display.draw_png(...)`, and LVGL flushes keep
