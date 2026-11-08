@@ -1,4 +1,4 @@
-"""RGB565-to-three-tone conversion using the upstream grayscale thresholds."""
+"""RGB565-to-three-tone conversion using green-channel thresholds 96 and 204."""
 try:
     from micropython import viper
 except ImportError:

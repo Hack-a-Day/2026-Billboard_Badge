@@ -1,7 +1,6 @@
 """B1 dual-COG transport.
 
 Sequences derive from Pervasive Displays and the Hackaday Billboard Badge.
-Fast timings and burst reuse are backported from the local C driver.
 One task owns a Panel. Buffers must remain unchanged until an await returns.
 """
 

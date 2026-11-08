@@ -7,7 +7,6 @@ per-pixel pulse budgets, factory color refresh and slow black/gray/white refresh
 * [Usage and API guide](display-driver/README.md)
 * [C component](C/components/billboard_epd/README.md)
 * [MicroPython package](Python/badge/lib/billboard_epd/README.md)
-* [Upstream comparison](display-driver/UPSTREAM.md)
 * [Validation and remaining hardware checks](display-driver/VALIDATION.md)
 
 The source package includes examples, host tests and reproducible packaging tools.

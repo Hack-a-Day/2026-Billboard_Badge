@@ -320,7 +320,7 @@ class RenderTests(unittest.TestCase):
 
     def test_waveforms_match_pinned_baseline(self):
         import hashlib
-        # Recorded from the source tables described in UPSTREAM.md.
+        # Frozen digests guard against accidental waveform changes.
         for table, digest in (
             (BOLD, 'c21fa4a66412bef79d6043be71ccba834c4758b7aed8651d440087b72e9cae21'),
             (RED, '54406876c77d0410ff37bb89e98737f3a8d85950d9039cebb14e69fa5620b7b3'),

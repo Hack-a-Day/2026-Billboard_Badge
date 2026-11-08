@@ -1,7 +1,7 @@
 # Billboard B1 ESP-IDF component
 
 960 × 672 dual-controller e-paper driver, version 0.1.0-rc.1. Tested by building
-with ESP-IDF 5.3.1 for ESP32-S3; physical verification of this extraction remains
+with ESP-IDF 5.3.1 for ESP32-S3; physical verification of this release remains
 pending. Supports fast B/W/red drive masks, factory color and slow three-tone
 grayscale. Grayscale is black/gray/white; it cannot display red in the same image.
 

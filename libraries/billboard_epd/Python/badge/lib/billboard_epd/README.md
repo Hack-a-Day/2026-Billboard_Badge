@@ -31,6 +31,6 @@ Default pins: CS 13/3, BUSY 12/8, DC 10, RESET 11, SCK 21, MOSI 47. All can be
 configured in `create_panel(...)`; an existing SPI object can also be supplied.
 Default hardware SPI is mode 0 at 20 MHz. Driver-8 panels are not supported here.
 
-Host software checks pass; physical validation of this extracted version is
+Host software checks pass; physical validation of this release is
 still required before a stable hardware release. Full documentation, examples,
 and validation notes are included in the release archive.

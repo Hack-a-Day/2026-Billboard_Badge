@@ -7,10 +7,9 @@
   randomized pulse-budget reference tests, queued snapshots and periodic cleans.
 * Bad arguments, grayscale overlap, stalled BUSY, missing BUSY assertion,
   transport failures, fault latching and recovery exercised with fake hardware.
-* Fourteen local badge app regression tests cover frozen repeated frames, queued
-  updates, grayscale PNG decoding and the existing nametag app.
-* Changed Python modules cross-compiled for Xtensa-windowed MicroPython.
-* Standalone ESP-IDF 5.3.1 example builds for ESP32-S3 with octal PSRAM.
+* Python modules cross-compiled for Xtensa-windowed MicroPython.
+* ESP-IDF 5.3.1 example builds for ESP32-S3 with octal PSRAM, including from the
+  standalone component archive.
 
 These checks do not measure pigment behavior or validate a real SPI connection.
 
@@ -33,5 +32,4 @@ Record panel part/revision, board, firmware version, temperature and power sourc
 8. Record visual results and timing for repeated use before changing the version
    from a release candidate to a stable tag.
 
-The existing local source's hardware comments describe prior experiments; they
-are not test results for this extracted release.
+Physical validation of this release is pending.
