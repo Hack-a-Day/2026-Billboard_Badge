@@ -5,7 +5,7 @@ Use it from an asyncio task, without gc.collect() between frames (it takes ~0.35
     panel = PartialEPD()
     await panel.start()        # waits for the stock driver, then cleans to white
     panel.clear()              # fast; then draw into panel.fb: 960 x 672, 1 = black
-    await panel.show()         # sends what changed, one ~0.6 s pull
+    await panel.show()         # sends and scans only the rows that changed
     await panel.stop()         # always: powers the panel down and frees the bus
 """
 
@@ -189,6 +189,7 @@ class PartialEPD:
         self.fb = None           # draw here: 960 x 672 MONO_HLSB, 1 = black
         self.last_send_ms = 0    # last show(): from the call to the refresh start
         self.last_pull_ms = 0    # last show(): the refresh itself
+        self.last_scan_rows = 0  # last show(): gate rows selected for the pull
         self._shown = None       # what the film shows
         self._stage = None       # one chip's bytes on their way out
         self._waits = _QUICK
@@ -468,7 +469,18 @@ class PartialEPD:
         buf, shown, now, prev, win = self.buf, self._shown, self._now, self._prev, self._win
         hit = (_diff(buf, shown, 0, now[0]), _diff(buf, shown, _HALF, now[1]))
         if not (hit[0] or hit[1]):
+            self.last_scan_rows = 0
             return 0
+        # The two COGs share gate timing. Pull the union of rows whose visible
+        # pixels change, on both COGs, while leaving DRFW at its full-panel
+        # value. Narrowing DRFW copies rows on this panel; narrowing DUW has
+        # been hardware-validated from one row through the 624-row app area.
+        scan_y0 = _H
+        scan_y1 = -1
+        for c in (0, 1):
+            if hit[c]:
+                scan_y0 = min(scan_y0, now[c][2])
+                scan_y1 = max(scan_y1, now[c][3])
         if not self._partial or self.pulls >= SESSION_PULLS:
             await self.restart()
         for c in (0, 1):
@@ -494,7 +506,12 @@ class PartialEPD:
                 p, n = prev[c], now[c]
                 p[0], p[1], p[2], p[3] = n[0], n[1], n[2], n[3]
             self._prev_hit[c] = hit[c]
-        self._cmd(0x13, _DUW_ALL)   # RAM window back to the whole panel before the pull
+        duw = self._duw
+        duw[0], duw[1] = 0, _HALF - 1
+        duw[2], duw[3] = scan_y0 & 0xFF, scan_y0 >> 8
+        duw[4], duw[5] = scan_y1 & 0xFF, scan_y1 >> 8
+        self._cmd(0x13, duw)        # gate-scan union, sent to both COGs
+        self.last_scan_rows = scan_y1 - scan_y0 + 1
         shown[:] = buf
         self.pulls += 1
         self.last_send_ms = time.ticks_diff(time.ticks_ms(), t0)

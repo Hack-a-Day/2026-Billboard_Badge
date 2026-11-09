@@ -79,6 +79,31 @@ Custom waveform waits are bounded and check both display controllers. Updates
 queued during a refresh coalesce into the latest requested image and mode.
 
 
+## Optional B1 partial refresh
+
+`lib.epd_partial.PartialEPD` provides experimental black/white animation on the
+B1 panel. It keeps one powered controller session open, sends only changed
+pixel boxes and selects the union of changed gate rows on both controller
+halves. A change spanning the full 960 × 672 panel retains the original
+full-height scan. A full-width change in the 960 × 624 application area scans
+624 rows without touching the 48-row status area.
+
+The most recent call exposes `last_send_ms`, `last_pull_ms` and
+`last_scan_rows` for application telemetry. The same row-selection strategy was
+hardware-validated in an ESP-IDF integration on one E2969JS0B1 badge: a bounded
+60-frame 960 × 624 run at 20 MHz completed in 36.479 seconds (1.645 frame
+operations per second), including rendering, RAM writes and physical pulls.
+The exact MicroPython timing of this implementation still needs measurement.
+This is an experimental monochrome path: ghosting accumulates, red requires a
+normal refresh, and results from one recycled panel do not establish a safe
+lifetime or a guaranteed rate on other units.
+
+The tagged [BWR Hackaday Badge 1.0 release](https://github.com/agentmcmillan/BWR-HackADay-Badge/releases/tag/v1.0.0)
+contains the benchmark methodology, controller timing data and TCON/OTP lab
+notes behind the experiment; it intentionally excludes private media and
+complete firmware images.
+
+
 ## Optional smooth text
 
 Set `"smooth_text": true` in `/data/panel_config.json` to enable gray
