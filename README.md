@@ -43,6 +43,8 @@ LL FF  FF FF  'S' 'C' '2' '6'  01  ID ID ID  handle...
 
 Apps do their own scanning with `bluetooth.BLE().gap_scan(...)`; `presence.parse(adv_data)` returns `(id_hex, handle)` for a badge advert and `None` for anything else. `presence.badge_id()` gives your own id, so you can skip your own advert. If your app shares the radio, only call `ble.active(True)` when `ble.active()` is `False`: on this firmware, re-activating a radio that's already on silently stops the presence advert. `presence` re-sends the advert every 30 s as a safety net.
 
+Press Menu +/- to open the app menu, Menu +/- to pick an app, and User A or B to launch it. The badge remembers the last app launched from the menu (in `/data/last_app.json`) and starts it again at the next boot. Hold Menu + or Menu - while the badge boots to get the menu instead. To always boot into the menu, create `/data/boot.json` containing `{"resume": false}`.
+
 # Displaying Images
 
 The badge's display only supports three colors: white, black, red. Shading between those needs to be implemented by dithering pixels of those colors together. Unlike LCD, CRT, or other displays you may be used to, you cannot set multiple colors within a single pixel, each pixel is only one of the three colors.
