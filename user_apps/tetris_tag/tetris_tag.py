@@ -10,10 +10,10 @@ A red banner with white Helvetica Bold lettering runs across the top of the scre
 The lettering is an image made on a computer by make_banner.py. Edit NAMES and the
 settings below to make it your own.
 
-The panel's own refresh takes about 30 s, far too slow to animate. On B1 panels
-with current firmware (display.supports_fast) two pieces fall at a time, like a
-two-player Tetris, in partial refreshes (see lib/epd_fast.py): the screen is cleared
-with one full refresh, then only the pixels that change are redrawn. Both pieces appear
+The panel's own refresh takes about 30 s, far too slow to animate. On B1 panels with
+lib/epd_partial.py (about 0.65 s a frame) two pieces fall at a time, like a two-player
+Tetris, in partial refreshes: the screen is cleared with one full refresh that also draws
+the red banner, then only the pixels that change are redrawn. Both pieces appear
 at 25% of the screen height turned a random quarter turn and fall without turning.
 User A turns the left piece and User B the right one, 90 degrees clockwise per press.
 Once a piece is the right way up it drops into place on the next refresh. A piece
@@ -22,14 +22,22 @@ Elsewhere the app falls back to a slideshow, one full refresh per snapshot, show
 the pieces landed (black) and the next few still in the air (red).
 """
 
+import asyncio as aio
+import framebuf
 import gc
 import random
+import sys
 import time
 
 from apps.base_app import BaseApp
 from lib.button import UserA, UserB
 from lib.epd import display, display_width, display_height
 from lib.led_bar import leds
+
+try:  # the partial refresh driver; without it the app falls back to the slideshow
+    from lib import epd_partial as _ep
+except ImportError:
+    _ep = None
 
 NAMES = ("YOUR NAME",)
 """Shown in turn, forever. Replace "YOUR NAME" with your own, using only the characters
@@ -44,8 +52,8 @@ red band."""
 
 BANNER_PCT = 25
 """Banner height as a percent of the screen height. 0 for no banner. Must match the
-image (make_banner.py --pct). The banner is red, so it is drawn by the full refresh
-at the start of each name, and the fast partial refreshes hold it untouched."""
+image (make_banner.py --pct). The banner is red, so it is drawn by the one full refresh
+when the app is launched, and the partial refreshes leave it untouched."""
 
 TARGET_FRAMES = 8
 """Roughly how many e-paper refreshes it takes to build one name.
@@ -74,8 +82,8 @@ HOLD_S = 30
 round starts. User A skips the wait to the next name, User B restarts this one."""
 
 FAST = True
-"""Use partial refreshes where the panel and firmware support them. False forces
-the slideshow."""
+"""Use partial refreshes (lib/epd_partial.py) where the panel and firmware support
+them. False forces the slideshow."""
 
 PIECES_AT_ONCE = 2
 """Pieces falling at the same time: 1 or 2. With 2, User A turns the left one and User
@@ -95,16 +103,6 @@ AUTO_TURN_PCT = 50
 """A piece that is still not the right way up turns itself, 90 degrees a refresh by the
 shorter way round, once it reaches this percent of the screen height. Buttons only turn
 a piece above this line."""
-
-HOP_PULLS = 1
-"""Drive steps (about 1.1 s each) for frames while a piece is moving. 1 is
-quickest but pale. Raise to 2 or 3 if falling pieces are too faint to see."""
-
-SETTLE_PULLS = 3
-"""Drive steps for the frame where a piece lands. 3 is solid black."""
-
-BLINK_PULLS = 3
-"""Drive steps for each flash when BLINK_MODE is 'screen' and fast refresh is on."""
 
 FLIGHT_MIN_ROWS = 2
 """Slideshow only: pieces in the air are drawn at least this many rows above
@@ -179,6 +177,50 @@ _BLINK = 1
 _CLEAR = 2
 _DROP = 3
 _HOLD = 4
+
+_FULL = 1  # what the screen task is asked to do: a normal refresh of the whole panel,
+_PART = 2  # or a partial one of what changed
+_ALIVE_MS = 2500  # the screen task gives the panel back this long after run() stops
+_IDLE_MS = 2000   # and powers it down this long after the picture stops changing
+
+
+if _ep is not None:
+    class _Panel(_ep.PartialEPD):
+        """PartialEPD for a screen that has red on it. start() wipes the panel to white,
+        which would also wipe the red banner; this opens a session on top of the picture
+        a normal refresh has just drawn instead. Black pixels the partial pulls never
+        touch, and so the red under them, stay as they are."""
+
+        async def start_keep(self, film):
+            """Open a session. film is the black plane the last normal refresh drew."""
+            d = display
+            if not d._reverse_fb_bits:
+                raise _ep.PanelError("partial refresh is only known to work on the B1 panel")
+            while d._framebuffer_ready.is_set() or not d.is_done_updating():
+                await aio.sleep_ms(50)
+            lock = getattr(d, "lock", None)
+            if lock is not None:
+                await lock.acquire()
+                self._locked = True
+            try:
+                if self._rst():  # chips awake, maybe still refreshing: never reset mid-refresh
+                    await self._ready("idle", 60_000)
+                self._spi = d.spi
+                if self.buf is None:
+                    # (epd_partial's own sizes are const()s with a leading underscore, which
+                    # MicroPython does not export from the module.)
+                    plane = display_width * display_height // 8
+                    self.buf = bytearray(plane)
+                    self.fb = framebuf.FrameBuffer(self.buf, display_width, display_height,
+                                                   framebuf.MONO_HLSB)
+                    self._shown = bytearray(plane)
+                    self._stage = bytearray(plane // 2)
+                memoryview(self._shown)[:] = film
+                memoryview(self.buf)[:] = film
+                await self._open()
+            except BaseException:
+                await self.stop()
+                raise
 
 
 def _neighbors(c):
@@ -544,7 +586,7 @@ class _Plan:
 class TetrisTagApp(BaseApp):
     def __init__(self, name: str | None = None) -> None:
         self.name = "Tetris Tag"
-        self.sleep_ms = 25
+        self.sleep_ms = 10  # short: the time between a refresh ending and the next starting counts
         self.launched = False
         self.plans = {}
         self.word = 0
@@ -566,6 +608,15 @@ class TetrisTagApp(BaseApp):
         self.frame_ms = 0
         self.fliers = []  # the pieces of the current wave in the air
         self.taps = [0, 0]  # presses of User A and User B since the last refresh
+        self.panel = None  # the partial refresh driver
+        self.task = None  # the task that owns the panel while the app runs
+        self.req = None  # what it was last asked to do: _FULL or _PART
+        self.pending = False  # a request is waiting or being shown
+        self.failed = False  # the screen task stopped on an error
+        self.beat = 0  # ticks_ms of the last run(); the task stops when it gets old
+        self.film = None  # the black plane a normal refresh is about to draw
+        self.need_full = True  # the next name starts with the one full refresh (red banner)
+        self.wipe_step = 0
 
     def _start_word(self, idx):
         self.word = idx % len(NAMES)
@@ -576,10 +627,18 @@ class TetrisTagApp(BaseApp):
         self.plan = plan
         if self.banner is None:
             self.banner = _Banner()
-        self.screen_ready = False  # the next frame starts from a full clear and banner
-        self.fast = FAST and getattr(display, "supports_fast", False)
+        self.fast = (FAST and _ep is not None and not self.failed
+                     and getattr(display, "_reverse_fb_bits", False))
+        if self.need_full or not self.fast:
+            self.screen_ready = False  # the next frame starts from a full clear and the banner
         self.frame_ms = 0
         if self.fast:
+            if self.film is None:
+                self.film = bytearray(len(display._framebuffer_black))
+            if self.task is None or self.task.done():
+                self.req = None
+                self.pending = False
+            self._ensure_task()
             self.waves = plan.land_waves(max(1, PIECES_AT_ONCE))
             self.order = [i for wave in self.waves for i in wave]
             self.batch = 0
@@ -597,6 +656,82 @@ class TetrisTagApp(BaseApp):
         self.frame = 0
         self.state = _BUILD
         print(f"{NAMES[self.word]}: {count} pieces, {self.frames} frames, cell {plan.cell}px")
+
+    def _alive(self):
+        # run() stops being called when the user leaves the app (no hook for that), so
+        # the task gives the panel back when the calls stop. Allow for the PNG decode and
+        # a garbage collection, a second or so each, on top of a frame's work.
+        return time.ticks_diff(time.ticks_ms(), self.beat) < _ALIVE_MS
+
+    async def _screen(self):
+        """Owns the panel while the app runs: does the normal and partial refreshes that
+        run() asks for, one at a time, and hands the panel back when the app stops."""
+        if self.panel is None:
+            self.panel = _Panel()
+        panel = self.panel
+        session = False
+        asleep = False
+        still = time.ticks_ms()
+        try:
+            while self._alive():
+                req = self.req
+                if req is None:
+                    if session and not asleep and time.ticks_diff(time.ticks_ms(), still) > _IDLE_MS:
+                        await panel.sleep()  # the picture sits still: no point keeping the boost up
+                        asleep = True
+                    await aio.sleep_ms(5)
+                    continue
+                self.req = None
+                if req == _FULL:
+                    if session:
+                        await panel.stop()
+                        session = False
+                    display.update()
+                    while not display.is_done_updating():
+                        await aio.sleep_ms(50)
+                else:
+                    if not session:
+                        await panel.start_keep(self.film)
+                        session = True
+                    memoryview(panel.buf)[:] = display._framebuffer_black
+                    await panel.show()
+                    asleep = False
+                still = time.ticks_ms()
+                self.pending = False
+        except Exception as ex:
+            print("Tetris Tag: screen stopped:", ex)
+            sys.print_exception(ex)
+            self.failed = True
+            self.pending = False
+        finally:
+            if session:
+                try:
+                    await panel.stop()
+                except Exception as ex:
+                    print("Tetris Tag: panel stop:", ex)
+
+    def _ensure_task(self):
+        """Make sure the screen task is running (it stops when run() goes quiet)."""
+        if not self.failed and (self.task is None or self.task.done()):
+            self.beat = time.ticks_ms()
+            self.task = aio.create_task(self._screen())
+
+    def _request(self, kind):
+        """Ask the screen task to show what is in the framebuffers."""
+        self._ensure_task()
+        if kind == _FULL:
+            memoryview(self.film)[:] = display._framebuffer_black  # what the film will show
+        self.req = kind
+        self.pending = True
+        self.frame_ms = time.ticks_ms()
+
+    def _full(self):
+        """A normal refresh of the whole panel (about 35 s)."""
+        if self.fast:
+            self._request(_FULL)
+        else:
+            display.update()
+            self.frame_ms = time.ticks_ms()
 
     def _new_frame(self):
         """Blank canvas for the next frame. The banner is drawn once per name and then
@@ -628,7 +763,7 @@ class TetrisTagApp(BaseApp):
         self._show(landed, in_air)
         self.frame += 1
 
-    def _show_fast(self, moving, pulls):
+    def _show_fast(self, moving):
         """Partial refresh: landed pieces and the ones in the air, all in
         black. moving is a list of cell lists, one per piece in the air."""
         plan = self.plan
@@ -637,8 +772,7 @@ class TetrisTagApp(BaseApp):
             plan.draw_piece(display.black, plan.pieces[i])
         for cells in moving:
             plan.draw_cells(display.black, cells)
-        display.update(fast=True, pulls=pulls)
-        self.frame_ms = time.ticks_ms()
+        self._request(_PART)
 
     def _drop_frame(self):
         """One partial refresh of the current wave. The first one shows the pieces at
@@ -647,7 +781,6 @@ class TetrisTagApp(BaseApp):
         or by itself once it is low enough. A piece that is the right way up drops into
         place."""
         wave = self.waves[self.batch]
-        landing = False  # a piece drops into place in this refresh
         if self.frame == 0:
             lanes = self.plan.lanes(wave)
             self.fliers = [_Flier(self.plan, i, lanes[n], n) for n, i in enumerate(wave)]
@@ -659,12 +792,9 @@ class TetrisTagApp(BaseApp):
                     turns = self.taps[0] + self.taps[1]
                 else:
                     turns = self.taps[f.side]
-                was = f.landed
                 f.step(turns % 4, auto_row)
-                landing = landing or (f.landed and not was)
             self.taps = [0, 0]
-        pulls = SETTLE_PULLS if landing else HOP_PULLS
-        self._show_fast([f.cells for f in self.fliers], pulls)
+        self._show_fast([f.cells for f in self.fliers])
         if all(f.landed for f in self.fliers):
             self.landed.extend(wave)
             self.batch += 1
@@ -685,6 +815,21 @@ class TetrisTagApp(BaseApp):
         self.hold_ms = time.ticks_ms()
         print(f"Holding {NAMES[self.word]} for {HOLD_S} s")
 
+    def _wipe(self, then):
+        """Clear the area under the banner with partial refreshes instead of a full one: all
+        black for a refresh, then all white, which also takes the ghosts off. The banner is
+        not driven, so it stays as it is."""
+        top = self.banner.height
+        rows = display_height - top
+        if self.wipe_step == 0:
+            display.black.fill_rect(0, top, display_width, rows, 1)
+            self.wipe_step = 1
+        else:
+            self._new_frame()  # white under the banner
+            self.wipe_step = 0
+            self.state = then
+        self._request(_PART)
+
     def _blink_leds(self):
         if time.ticks_diff(time.ticks_ms(), self.blink_ms) < BLINK_MS:
             return
@@ -702,18 +847,27 @@ class TetrisTagApp(BaseApp):
             self._start_hold()
             return
         shown = self.order if self.blink_step % 2 else []
-        if self.fast and not display.supports_fast:
-            self.fast = False
         if self.fast:
             self.landed = shown
-            self._show_fast([], BLINK_PULLS)
+            self._show_fast([])
         else:
             self._show(shown)
         self.blink_step += 1
 
     def run(self):
+        try:
+            self._run()
+        finally:
+            # The task resumes when run() returns, so this is the heartbeat it checks. A
+            # long run() (planning, a PNG decode) must not look like the app having stopped.
+            self.beat = time.ticks_ms()
+
+    def _run(self):
+        self.beat = time.ticks_ms()
         if self.launched:
             leds.fill((0, 0, 0))
+            self.failed = False
+            self.need_full = True  # whatever was on the panel, draw the red banner afresh
             self._start_word(0)
             return
 
@@ -733,7 +887,7 @@ class TetrisTagApp(BaseApp):
             self._start_word(self.word)
 
         # A refresh in progress owns the framebuffers.
-        if not display.is_done_updating():
+        if self.pending or not display.is_done_updating():
             return
 
         if self.frame_ms:
@@ -741,17 +895,20 @@ class TetrisTagApp(BaseApp):
             self.frame_ms = 0
 
         if self.state == _CLEAR:
-            # The one full refresh per name: wipes the last name and any ghosts,
-            # and draws the red banner, which the fast frames then hold.
-            self.screen_ready = False
-            self._new_frame()
-            display.update()
-            self.frame_ms = time.ticks_ms()
-            self.state = _DROP
+            if self.need_full:
+                # The only full refresh, when the app starts: it draws the red banner,
+                # which the partial refreshes then leave alone.
+                self.screen_ready = False
+                self._new_frame()
+                self._full()
+                self.need_full = False
+                self.state = _DROP
+            else:
+                self._wipe(_DROP)  # a new name: wipe what is under the banner
         elif self.state == _DROP:
-            if not display.supports_fast:
-                # The driver gave up on fast refresh after repeated failures.
-                print("Fast refresh stopped working, using the slideshow")
+            if self.failed:
+                # The partial refresh stopped working: the slideshow still works.
+                print("Partial refresh stopped working, using the slideshow")
                 self._start_word(self.word)
             elif self.batch < len(self.waves):
                 self._drop_frame()

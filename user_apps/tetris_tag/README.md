@@ -26,7 +26,7 @@ To install, run this from the root of the repo (the app also needs the newer dis
 and its banner image; see Installing below):
 ```
 mpremote cp firmware/badge/lib/epd.py :lib/epd.py
-mpremote cp firmware/badge/lib/epd_fast.py :lib/epd_fast.py
+mpremote cp firmware/badge/lib/epd_partial.py :lib/epd_partial.py
 mpremote cp firmware/badge/lib/large_png.py :lib/large_png.py
 mpremote cp firmware/badge/data/rendered_luts.py :data/rendered_luts.py
 mpremote cp user_apps/tetris_tag/tetris_banner.png :data/graphics/tetris_banner.png
@@ -38,7 +38,7 @@ Then select "Tetris Tag" from the menu.
 ## How to play
 
 Two pieces appear together at 25% of the screen height, each turned a random quarter
-turn. They fall a few rows per refresh (about 1.4 s) **without turning** until you turn
+turn. They fall a few rows per refresh (about 0.65 s) **without turning** until you turn
 them. Press User A for the piece on the left and User B for the one on the right; each
 press turns it 90 degrees clockwise at the next refresh. When a piece is the right way up
 it drops into its place on the next refresh. A piece you leave alone turns itself,
@@ -59,7 +59,6 @@ Edit the top of `tetris_tag.py`:
 - `PIECES_AT_ONCE`, `SPAWN_PCT`, `FALL_ROWS`, `AUTO_TURN_PCT`: how many pieces fall at a time
   (1 or 2), the screen height they start from, how far they fall each refresh, and the
   screen height where an unturned piece starts turning itself.
-- `HOP_PULLS`, `SETTLE_PULLS`: how hard each refresh drives the panel (below).
 - `BLINK_MODE`, `BLINK_COUNT`, `BLINK_MS`: see below. `HOLD_S`: how long the finished name
   stays up after the blinking (30 s).
 - `BANNER_PCT`, `BANNER_IMAGE`: the banner height and its image (see Banner).
@@ -87,18 +86,23 @@ fallback font (Apple Symbols by default, thickened a little to match the bold le
 `BANNER_PCT` in `tetris_tag.py` and `--pct` must agree (25% is 168 px). If the image
 is not on the badge, the banner is a plain red band.
 
-The panel can only make red with a full refresh, so the banner is drawn once, by the full
-refresh at the start of each name, and the partial refreshes then hold it untouched.
+The panel can only make red with a full refresh, so the banner is drawn once, by the one full
+refresh when the app is launched (about 36 s, the first LED blinks red), and the partial
+refreshes then leave it untouched.
 
-## Fast partial refresh
+## Partial refresh
 
-The panel's own refresh takes about 30 s, which is no use for animation. This app
-uses the fast partial refresh in `firmware/badge/lib/epd_fast.py`
-(`display.update(fast=True)`), which redraws only the pixels that changed, in about
-1.1 s per drive step ("pull"):
+The panel's own refresh takes about 30 s, which is no use for animation. This app uses the
+partial refresh driver `firmware/badge/lib/epd_partial.py` (`PartialEPD`), which redraws only
+the pixels that changed, in about 0.65 s a frame (measured on a badge: median 629 ms):
 
-1. Each name starts with one full refresh to a blank field. That is the "clear
-   screen" step, and it also wipes any ghosting.
+1. When the app is launched there is one normal full refresh to a blank field with the red
+   banner (about 36 s). Each new name after that starts with a partial wipe of the field
+   instead: all black for one refresh, then all white (about 1.5 s), which also takes most
+   ghosting off. The app opens its partial session on top of what the full refresh drew
+   (`PartialEPD.start()` would flash the panel white first, which would also wipe the red
+   banner, so the app has its own `start_keep`). The partial pulls only touch the pixels around
+   what changed, so the banner is not driven.
 2. The pieces then fall two at a time (see How to play). A fall is one refresh to show the
    pieces, a few more while they fall and turn, and one to drop each into place. A square,
    which looks the same turned, is never turned and drops straight away.
@@ -108,25 +112,26 @@ uses the fast partial refresh in `firmware/badge/lib/epd_fast.py`
    game does not have. The splitter prefers real shapes and fewer pieces. A block with nothing
    around it at all, such as the dot of a lowercase i, would still be alone; none of the
    built-in letters in the default name do that.
-3. Moving frames use `HOP_PULLS` (1, so the piece is pale while it moves) and the frame where
-   a piece lands `SETTLE_PULLS` (3, solid). Anything left pale is topped up by the next frame.
-   There is no LED fill any more; the LEDs only blink at the end of a name.
+3. A background task owns the panel while the app runs, as in the Pong app: it hands the panel
+   back about 2.5 s after you leave the app and powers it down after 2 s without changes.
+   The LEDs only blink at the end of a name.
+
+Ghosting: partial refreshes leave light ghosts that build up; the black-then-white wipe at the
+start of each name takes most of them off, and a full refresh (relaunch the app) takes off all.
 
 Red pieces were tried (falling red, then one extra refresh to turn black) and did not work
-on the fast refresh: the fast waveform is black and white by design and cannot make a good
-red on this panel. The red banner is unaffected: it is held, not driven.
+on a partial refresh: it is black and white by design and cannot make a good red on this
+panel. The red banner is unaffected: it is not driven.
 
-Speed. A pass of "YOUR NAME" is 37 pieces in about 19 waves. In simulation the falling time per pass
-(plus the full-screen refresh at the start, about 37 s, which cannot be made faster) is
-about 235 s if nobody presses a button and less if you turn the pieces (about 195 s with some
-random presses): a piece you turn right way up early drops sooner. These times are the
-simulator's; the app prints `refresh ms:` over serial after every frame, so you can see the
-real ones.
+Speed. Each refresh takes about 0.65 s, which is the driver's floor, so the length of a pass
+depends on how many refreshes it needs. A pass of "YOUR NAME" is 37 pieces in about 19 waves
+and, in simulation, about 120 refreshes if nobody presses a button (about 75 s) and fewer if you
+turn the pieces: a piece you turn right way up early drops sooner. The app prints `refresh ms:`
+over serial after every frame, so you can see the real times.
 
-If
-the badge is not a B1 panel, or the firmware does not have `epd_fast.py`, the app
-falls back to a slideshow of full refreshes, one per snapshot, with the pieces in the
-air in red. The slideshow does not turn the pieces.
+If the badge is not a B1 panel, or the firmware does not have `epd_partial.py`, or the partial
+refresh stops working, the app falls back to a slideshow of full refreshes, one per snapshot,
+with the pieces in the air in red. The slideshow does not turn the pieces.
 
 ## Blinking and holding
 
@@ -136,15 +141,15 @@ half a second off, three times. `BLINK_MODE = "screen"` blinks the paper itself
 (name, blank, name...), but each step is at least one drive step, so it is much slower.
 
 When the blinking is over the finished name stays on the screen, untouched, for `HOLD_S`
-seconds (30) before the next round starts with a full-screen clear. User A skips the wait to
+seconds (30) before the next round starts with a partial wipe. User A skips the wait to
 the next name and User B restarts the current one right away.
 
 ## Installing
 
 The commands at the top copy the app, its banner image and the display files it needs.
 The app needs the newer display driver on the badge as well as the app itself. Badges that
-shipped with older firmware are missing `rendered_luts.py`, which the fast refresh uses, and
-an updated `large_png.py`, which the new `epd.py` relies on. `mpremote ls :lib :data` shows
+shipped with older firmware are missing `rendered_luts.py`, which the partial refresh uses, and
+an updated `epd.py` (it has the display lock) and `large_png.py`, which `epd_partial.py` relies on. `mpremote ls :lib :data` shows
 what is on the badge. After the first install only `tetris_tag.py` changes, so
 `mpremote cp user_apps/tetris_tag/tetris_tag.py :apps/tetris_tag.py` and a reset is enough.
 
