@@ -57,7 +57,9 @@ Edit the top of `tetris_tag.py`:
   add a glyph to `FONT` for any other character (5 wide, 7 tall, `X` is a block). Long names
   get small blocks and take longer, since the pieces fall a fixed distance per refresh.
 - `PIECES_AT_ONCE`, `SPAWN_PCT`, `FALL_PX`, `MIN_PRESS_FRAMES`, `AUTO_TURN_PCT`: how many pieces
-  fall at a time (1 or 2), the screen height they start from, how far they fall each refresh in
+  fall at a time (1 or 2; the two are picked far apart, one over the first word and one over the
+  last words of the name, or, for a one-word name, at least 40% of its width apart), the screen
+  height they start from, how far they fall each refresh in
   pixels (36: 3 rows for 12 px blocks, 2.25 for 16 px blocks; larger is a faster game but leaves
   less time to press a button before the piece turns itself), the fewest refreshes a player is
   to get to turn a piece (the fall slows down to allow it), and the screen height where an
@@ -199,7 +201,7 @@ on a partial refresh: it is black and white by design and cannot make a good red
 panel. The red bands are unaffected: they are not driven.
 
 Speed. Each refresh takes about 0.65 s, which is the driver's floor, so the length of a pass
-depends on how many refreshes it needs. A pass of "YOUR NAME" is 37 pieces in about 19 waves
+depends on how many refreshes it needs. A pass of "YOUR NAME" is 37 pieces in about 20 waves
 and, in simulation, about 150 refreshes if nobody presses a button (about 100 s) and fewer if you
 turn the pieces: a piece you turn right way up early drops sooner. The app prints `refresh ms:`
 over serial after every frame, so you can see the real times.

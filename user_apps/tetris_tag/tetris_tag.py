@@ -120,7 +120,10 @@ PIECES_AT_ONCE = 2
 """Pieces falling at the same time: 1 or 2. With 2, User A turns the left one and User
 B the right one (with 1, either button turns it). Two pieces only fall together if
 they land in separate columns, and each stays on its own side of the screen while it
-is in the air."""
+is in the air. They are chosen far apart: a name of two or more words gets the left piece
+from its first part (the first word, or the words left of the middle) and the right piece
+from the rest; a one-word name gets two pieces at least 40% of its width apart. When
+nothing suitable is ready, a piece falls alone."""
 
 SPAWN_PCT = 25
 """Every piece appears at this percent of the screen height, measured from the top.
@@ -709,6 +712,19 @@ class _Plan:
         self.auto_row = auto
         self.min_x = -(self.x0 // self.cell)
         self.max_x = (display_width - self.x0) // self.cell
+        self.cols = cols
+        # Where the name divides into its left part (first word or first names) and its right
+        # part: the middle of the gap between words that is nearest to the middle of the name.
+        # None if the name is one word.
+        self.split = None
+        pen = 0
+        for ch in text:
+            width = len(FONT[ch][0]) + 1
+            if ch == " " and 0 < pen and pen + width < cols:
+                mid = pen + width / 2
+                if self.split is None or abs(mid - cols / 2) < abs(self.split - cols / 2):
+                    self.split = mid
+            pen += width
         self.pieces = []
         self.before = []
         self.glyph_of = []  # for each piece, which letter it belongs to
@@ -759,11 +775,40 @@ class _Plan:
         edge = (low + high) // 2
         return [(self.min_x, edge), (edge, self.max_x)]
 
+    def middle(self, i):
+        """The column in the middle of piece i when landed."""
+        a, b = self.span(i)
+        return (a + b) / 2
+
+    def partner(self, first, ready):
+        """The piece from `ready` to fall together with `first`, or None. Two pieces fall
+        side by side only if they can be kept in separate columns on the way down; of those,
+        a name of two or more words takes one piece from its left part and one from its
+        right part (at least 15% of the name's width apart), and a one-word name takes two that are well apart (at least 40% of the
+        name's width, or failing that 25%, the farthest). Pieces that would fall close
+        together fall alone instead."""
+        apart, across = [], []
+        for other in ready:
+            pair = sorted((first, other), key=lambda i: self.span(i)[0])
+            if self.span(pair[0])[1] > self.span(pair[1])[0] or not self.lanes(pair):
+                continue
+            gap = abs(self.middle(first) - self.middle(other))
+            apart.append((gap, other))
+            if (gap >= 0.15 * self.cols and self.split is not None
+                    and (self.middle(first) < self.split) != (self.middle(other) < self.split)):
+                across.append(other)
+        if across:
+            return random.choice(across)
+        wide = [o for g, o in apart if g >= 0.4 * self.cols]
+        if wide:
+            return random.choice(wide)
+        far = [(g, o) for g, o in apart if g >= 0.25 * self.cols]
+        return max(far, key=lambda t: t[0])[1] if far else None
+
     def land_waves(self, at_most):
         """The pieces grouped into waves of one or two that fall together, each a list
         of piece numbers, left piece first. A wave only takes pieces whose supports have
-        already landed, so none waits on another, and two share a wave only if they can
-        be kept in separate columns on the way down."""
+        already landed, so none waits on another (see `partner` for who falls with whom)."""
         done = set()
         waves = []
         while len(done) < len(self.pieces):
@@ -772,13 +817,9 @@ class _Plan:
             first = random.choice(ready)
             ready.remove(first)
             wave = [first]
-            while at_most >= 2 and ready:
-                other = random.choice(ready)
-                ready.remove(other)
-                pair = sorted((first, other), key=lambda i: self.span(i)[0])
-                if self.span(pair[0])[1] <= self.span(pair[1])[0] and self.lanes(pair):
-                    wave = pair
-                    break
+            other = self.partner(first, ready) if at_most >= 2 else None
+            if other is not None:
+                wave = sorted((first, other), key=lambda i: self.span(i)[0])
             done.update(wave)
             waves.append(wave)
         return waves
