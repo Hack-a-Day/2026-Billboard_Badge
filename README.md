@@ -43,6 +43,16 @@ LL FF  FF FF  'S' 'C' '2' '6'  01  ID ID ID  handle...
 
 Apps do their own scanning with `bluetooth.BLE().gap_scan(...)`; `presence.parse(adv_data)` returns `(id_hex, handle)` for a badge advert and `None` for anything else. `presence.badge_id()` gives your own id, so you can skip your own advert. If your app shares the radio, only call `ble.active(True)` when `ble.active()` is `False`: on this firmware, re-activating a radio that's already on silently stops the presence advert. `presence` re-sends the advert every 30 s as a safety net.
 
+## Owner profile (`/data/owner.json`)
+
+To put your handle on the name tag, create `/data/owner.json` on the badge, for example with `mpremote cp owner.json :/data/owner.json`:
+
+```json
+{"maker_handle": "740Dave", "makes": "robots and blinky things"}
+```
+
+`maker_handle` is a handle or nickname, not your real name: the badge is worn in public, so only put something there you are happy for strangers to see. The Nametag app writes it on the "HELLO I AM" sticker; without the file the sticker stays blank. Other apps can read it with `from lib.owner import owner` (`owner.maker_handle`, `owner.makes`, `owner.get(key, default)`, `owner.reload()`). The file is optional and is not part of the repo, so updating the firmware won't overwrite it. Apps that write to it should keep any keys they don't know about.
+
 # Displaying Images
 
 The badge's display only supports three colors: white, black, red. Shading between those needs to be implemented by dithering pixels of those colors together. Unlike LCD, CRT, or other displays you may be used to, you cannot set multiple colors within a single pixel, each pixel is only one of the three colors.
