@@ -125,6 +125,10 @@ def main():
     ap.add_argument("--symbol-face", default="")
     ap.add_argument("--symbol-bold", type=float, default=SYMBOL_BOLD,
                     help="thicken fallback glyphs, as a fraction of the font size (0 for none)")
+    ap.add_argument("--size", type=int, default=0,
+                    help="font size in pixels, instead of the largest that fits (to match another banner)")
+    ap.add_argument("--drop", type=int, default=0,
+                    help="move the lettering this many pixels down from the middle of the band")
     ap.add_argument("--out", default="tetris_banner.png")
     args = ap.parse_args()
 
@@ -135,13 +139,14 @@ def main():
             sys.exit("the main font lacks some characters and no --symbol-font was found")
 
     banner_h = HEIGHT * args.pct // 100
-    size = fit_size(args.text, WIDTH - 2 * args.margin, int(banner_h * args.height_fraction), args)
+    size = args.size or fit_size(args.text, WIDTH - 2 * args.margin, int(banner_h * args.height_fraction), args)
     # Render at SUPERSAMPLE x the size, centre the ink in the band, shrink, threshold.
     big, box, _ = layout(args.text, size * SUPERSAMPLE, args.font, args.face,
                          args.symbol_font, args.symbol_face, args.symbol_bold)
     ink = big.crop(box)
     band = Image.new("L", (WIDTH * SUPERSAMPLE, banner_h * SUPERSAMPLE), 0)
-    band.paste(ink, ((band.width - ink.width) // 2, (band.height - ink.height) // 2))
+    band.paste(ink, ((band.width - ink.width) // 2,
+                     (band.height - ink.height) // 2 + args.drop * SUPERSAMPLE))
     mask = band.resize((WIDTH, banner_h), Image.LANCZOS).point(lambda v: 255 if v >= 128 else 0)
 
     out = Image.new("P", (WIDTH, banner_h), 0)
