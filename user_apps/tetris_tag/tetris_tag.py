@@ -6,14 +6,16 @@ User A: turn the left falling piece 90 degrees clockwise
 User B: turn the right falling piece 90 degrees clockwise
 (between names, User A skips to the next name and User B restarts the current one)
 
-A red banner with white Helvetica Bold lettering runs across the top of the screen.
+A red banner with white Helvetica Bold lettering runs across the top of the screen, and a
+red footer across the bottom 25% (your web address or social handles); the name lands
+right above it.
 The lettering is an image made on a computer by make_banner.py. Edit NAMES and the
 settings below to make it your own.
 
 The panel's own refresh takes about 30 s, far too slow to animate. On B1 panels with
 lib/epd_partial.py (about 0.65 s a frame) two pieces fall at a time, like a two-player
 Tetris, in partial refreshes: the screen is cleared with one full refresh that also draws
-the red banner, then only the pixels that change are redrawn. Both pieces appear
+the red bands, then only the pixels that change are redrawn. Both pieces appear
 at 25% of the screen height turned a random quarter turn and fall without turning.
 User A turns the left piece and User B the right one, 90 degrees clockwise per press.
 Once a piece is the right way up it drops into place on the next refresh. A piece
@@ -63,7 +65,20 @@ MAX_CELL = 16
 """Largest block size in pixels. Names are scaled down to fit the width."""
 
 BOTTOM_MARGIN = 8
-"""Pixels left clear under the letters."""
+"""Pixels left clear between the letters and the footer band (or the bottom of the
+screen, with no footer)."""
+
+FOOTER_PCT = 25
+"""Height of the red footer band across the bottom, as a percent of the screen height.
+It is drawn by the one full refresh when the app is launched and stays on the screen all
+the time; the name lands right above it. 0 for no footer."""
+
+FOOTER_IMAGE = "/data/graphics/tetris_footer.png"
+"""White lettering on red, 960 px wide, for your web address or social handles. Make it
+on a computer with make_banner.py, like the banner:
+    python3 make_banner.py --text "your web/@socials" --pct 25 --out tetris_footer.png
+and copy it to the badge (see the README). If the file is missing the footer is a plain
+red band."""
 
 BLINK_MODE = "leds"
 """'leds':   the finished name stays on the paper and the LED bar blinks.
@@ -95,14 +110,18 @@ SPAWN_PCT = 25
 """Every piece appears at this percent of the screen height, measured from the top.
 25 is the bottom edge of the banner. It is never put inside the banner."""
 
-FALL_ROWS = 3
-"""Rows a piece falls in each refresh while it is turning or waiting to be turned.
-Once it is the right way up it falls the rest of the way into place in one refresh."""
+FALL_PX = 36
+"""How far, in pixels, a piece falls in each refresh while it is turning or waiting to be
+turned (rounded to whole block rows: 3 rows for 12 px blocks, 2 for 16 px blocks). Once it
+is the right way up it falls the rest of the way into place in one refresh. Raise it for a
+faster game, but the time a player has to press a button before the piece turns itself
+shrinks in the same proportion."""
 
 AUTO_TURN_PCT = 50
 """A piece that is still not the right way up turns itself, 90 degrees a refresh by the
 shorter way round, once it reaches this percent of the screen height. Buttons only turn
-a piece above this line."""
+a piece above this line. The line is never lower than the pieces need to finish turning
+above the name, so with the footer it ends up higher than this."""
 
 FLIGHT_MIN_ROWS = 2
 """Slideshow only: pieces in the air are drawn at least this many rows above
@@ -187,7 +206,7 @@ _IDLE_MS = 2000   # and powers it down this long after the picture stops changin
 if _ep is not None:
     class _Panel(_ep.PartialEPD):
         """PartialEPD for a screen that has red on it. start() wipes the panel to white,
-        which would also wipe the red banner; this opens a session on top of the picture
+        which would also wipe the red bands; this opens a session on top of the picture
         a normal refresh has just drawn instead. Black pixels the partial pulls never
         touch, and so the red under them, stay as they are."""
 
@@ -434,7 +453,7 @@ class _Flier:
 
     def step(self, turns, auto_row):
         """Move on one refresh. A piece that is the right way up drops into place;
-        otherwise it falls FALL_ROWS, turned by the player's presses if it is still above
+        otherwise it falls plan.fall_rows, turned by the player's presses if it is still above
         auto_row, and by itself once it has fallen to auto_row."""
         if self.upright():
             self.landed = True
@@ -442,28 +461,36 @@ class _Flier:
             return
         if turns and self.row < auto_row:
             self.rot = (self.rot + turns) % 4
-        self.row = min(self.row + FALL_ROWS, self.top)
+        self.row = min(self.row + self.plan.fall_rows, self.top)
         if not self.upright() and self.row >= auto_row:
             self.rot = (self.rot + self._auto_turn()) % 4
         self.cells = self._place()
 
 
 class _Banner:
-    """A red band across the top, with the lettering image drawn over it."""
+    """A red band across the top and one across the bottom, each with its lettering
+    image drawn over it."""
 
     def __init__(self):
         self.height = display_height * BANNER_PCT // 100
+        self.foot = display_height * FOOTER_PCT // 100
 
     def draw(self):
         """Red band in the red plane, then the white lettering on top of it. If the
         image cannot be drawn the band stays plain red."""
-        if not self.height:
-            return
-        display.red.fill_rect(0, 0, display_width, self.height, 1)
-        try:
-            display.draw_png(BANNER_IMAGE, 0, 0)
-        except Exception as ex:  # missing file, not a palette PNG, ...
-            print("Banner image not drawn:", ex)
+        if self.height:
+            display.red.fill_rect(0, 0, display_width, self.height, 1)
+            try:
+                display.draw_png(BANNER_IMAGE, 0, 0)
+            except Exception as ex:  # missing file, not a palette PNG, ...
+                print("Banner image not drawn:", ex)
+        if self.foot:
+            top = display_height - self.foot
+            display.red.fill_rect(0, top, display_width, self.foot, 1)
+            try:
+                display.draw_png(FOOTER_IMAGE, top, 0)
+            except Exception as ex:
+                print("Footer image not drawn:", ex)
 
 
 class _Plan:
@@ -474,13 +501,25 @@ class _Plan:
         self.cell = max(2, min(MAX_CELL, display_width // (cols + 2)))
         self.gap = max(1, self.cell // 8)
         self.x0 = (display_width - cols * self.cell) // 2
-        self.field_rows = (display_height - BOTTOM_MARGIN) // self.cell
+        # The name sits BOTTOM_MARGIN pixels above the footer band; y_off shifts the grid
+        # down by what is left over after whole rows, so the gap is exactly that.
+        floor = display_height - display_height * FOOTER_PCT // 100 - BOTTOM_MARGIN
+        self.field_rows = floor // self.cell
+        self.y_off = floor - self.field_rows * self.cell
         self.y_grid = self.field_rows - GLYPH_ROWS
         # First grid row below the banner; pieces in the air stay under it.
         self.top_row = (display_height * BANNER_PCT // 100 + self.cell - 1) // self.cell
         # Row where every piece appears, and how far sideways a turned piece may reach.
         self.spawn_row = max(self.top_row,
                              (display_height * SPAWN_PCT // 100 + self.cell - 1) // self.cell)
+        # Rows a piece falls in each refresh.
+        self.fall_rows = max(1, int(FALL_PX / self.cell + 0.5))
+        # Row where unturned pieces start turning themselves: halfway down the screen, but
+        # no lower than the last place a piece can finish turning above the name (two
+        # turns, each after a fall of fall_rows, and a piece is at most four rows tall).
+        self.auto_row = max(self.spawn_row, min(
+            display_height * AUTO_TURN_PCT // 100 // self.cell,
+            self.y_grid - 2 * self.fall_rows - 3))
         self.min_x = -(self.x0 // self.cell)
         self.max_x = (display_width - self.x0) // self.cell
         self.pieces = []
@@ -556,13 +595,13 @@ class _Plan:
     def draw_cells(self, plane, cells):
         size = self.cell - self.gap
         for x, y in cells:
-            plane.fill_rect(self.x0 + x * self.cell, y * self.cell, size, size, 1)
+            plane.fill_rect(self.x0 + x * self.cell, y * self.cell + self.y_off, size, size, 1)
 
     def draw_piece(self, plane, cells, rows_up=0):
         size = self.cell - self.gap
         for x, y in cells:
             plane.fill_rect(self.x0 + x * self.cell,
-                            (y - rows_up) * self.cell, size, size, 1)
+                            (y - rows_up) * self.cell + self.y_off, size, size, 1)
 
     def flight_heights(self, batch):
         """How far above its landing spot each piece in the air is drawn."""
@@ -615,7 +654,7 @@ class TetrisTagApp(BaseApp):
         self.failed = False  # the screen task stopped on an error
         self.beat = 0  # ticks_ms of the last run(); the task stops when it gets old
         self.film = None  # the black plane a normal refresh is about to draw
-        self.need_full = True  # the next name starts with the one full refresh (red banner)
+        self.need_full = True  # the next name starts with the one full refresh (red bands)
         self.wipe_step = 0
 
     def _start_word(self, idx):
@@ -742,8 +781,9 @@ class TetrisTagApp(BaseApp):
             self.screen_ready = True
             return
         top = self.banner.height
-        display.black.fill_rect(0, top, display_width, display_height - top, 0)
-        display.red.fill_rect(0, top, display_width, display_height - top, 0)
+        rows = display_height - self.banner.foot - top  # between the two bands
+        display.black.fill_rect(0, top, display_width, rows, 0)
+        display.red.fill_rect(0, top, display_width, rows, 0)
 
     def _show(self, landed, in_air=()):
         """Slideshow: queue a snapshot, landed pieces in black, in the air in red."""
@@ -786,7 +826,7 @@ class TetrisTagApp(BaseApp):
             self.fliers = [_Flier(self.plan, i, lanes[n], n) for n, i in enumerate(wave)]
             self.taps = [0, 0]
         else:
-            auto_row = display_height * AUTO_TURN_PCT // 100 // self.plan.cell
+            auto_row = self.plan.auto_row
             for f in self.fliers:
                 if len(self.fliers) == 1:
                     turns = self.taps[0] + self.taps[1]
@@ -816,16 +856,16 @@ class TetrisTagApp(BaseApp):
         print(f"Holding {NAMES[self.word]} for {HOLD_S} s")
 
     def _wipe(self, then):
-        """Clear the area under the banner with partial refreshes instead of a full one: all
-        black for a refresh, then all white, which also takes the ghosts off. The banner is
-        not driven, so it stays as it is."""
+        """Clear the area between the two red bands with partial refreshes instead of a full
+        one: all black for a refresh, then all white, which also takes the ghosts off. The
+        bands are not driven, so they stay as they are."""
         top = self.banner.height
-        rows = display_height - top
+        rows = display_height - self.banner.foot - top
         if self.wipe_step == 0:
             display.black.fill_rect(0, top, display_width, rows, 1)
             self.wipe_step = 1
         else:
-            self._new_frame()  # white under the banner
+            self._new_frame()  # white between the bands
             self.wipe_step = 0
             self.state = then
         self._request(_PART)
@@ -867,7 +907,7 @@ class TetrisTagApp(BaseApp):
         if self.launched:
             leds.fill((0, 0, 0))
             self.failed = False
-            self.need_full = True  # whatever was on the panel, draw the red banner afresh
+            self.need_full = True  # whatever was on the panel, draw the red bands afresh
             self._start_word(0)
             return
 
@@ -896,7 +936,7 @@ class TetrisTagApp(BaseApp):
 
         if self.state == _CLEAR:
             if self.need_full:
-                # The only full refresh, when the app starts: it draws the red banner,
+                # The only full refresh, when the app starts: it draws the red bands,
                 # which the partial refreshes then leave alone.
                 self.screen_ready = False
                 self._new_frame()
@@ -904,7 +944,7 @@ class TetrisTagApp(BaseApp):
                 self.need_full = False
                 self.state = _DROP
             else:
-                self._wipe(_DROP)  # a new name: wipe what is under the banner
+                self._wipe(_DROP)  # a new name: wipe what is between the bands
         elif self.state == _DROP:
             if self.failed:
                 # The partial refresh stopped working: the slideshow still works.

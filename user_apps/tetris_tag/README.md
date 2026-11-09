@@ -23,13 +23,14 @@ Between names (while the screen is clearing, the name blinks or the finished nam
 User A skips to the next name and User B restarts the current one.
 
 To install, run this from the root of the repo (the app also needs the newer display driver
-and its banner image; see Installing below):
+and its two banner images; see Installing below):
 ```
 mpremote cp firmware/badge/lib/epd.py :lib/epd.py
 mpremote cp firmware/badge/lib/epd_partial.py :lib/epd_partial.py
 mpremote cp firmware/badge/lib/large_png.py :lib/large_png.py
 mpremote cp firmware/badge/data/rendered_luts.py :data/rendered_luts.py
 mpremote cp user_apps/tetris_tag/tetris_banner.png :data/graphics/tetris_banner.png
+mpremote cp user_apps/tetris_tag/tetris_footer.png :data/graphics/tetris_footer.png
 mpremote cp user_apps/tetris_tag/tetris_tag.py :apps/tetris_tag.py
 mpremote reset
 ```
@@ -42,7 +43,7 @@ turn. They fall a few rows per refresh (about 0.65 s) **without turning** until 
 them. Press User A for the piece on the left and User B for the one on the right; each
 press turns it 90 degrees clockwise at the next refresh. When a piece is the right way up
 it drops into its place on the next refresh. A piece you leave alone turns itself,
-90 degrees a refresh by the shorter way, once it reaches 50% of the screen height
+90 degrees a refresh by the shorter way, once it reaches 50% of the screen height (a little higher, see Footer)
 (`AUTO_TURN_PCT`), so the game plays itself if nobody presses. Buttons only count above
 that line. Each piece stays in its own half of the screen while it is falling, so the two
 never collide. When one piece is alone (the last of a letter), either button turns it.
@@ -55,13 +56,37 @@ Edit the top of `tetris_tag.py`:
   own name, or list several to cycle through them. Only characters in `FONT` can be
   shown: the letters A to Z and a to z, é, and space. There are no digits or punctuation yet:
   add a glyph to `FONT` for any other character (5 wide, 7 tall, `X` is a block). Long names
-  get small blocks and take longer, since the pieces fall a fixed number of rows per refresh.
-- `PIECES_AT_ONCE`, `SPAWN_PCT`, `FALL_ROWS`, `AUTO_TURN_PCT`: how many pieces fall at a time
-  (1 or 2), the screen height they start from, how far they fall each refresh, and the
-  screen height where an unturned piece starts turning itself.
+  get small blocks and take longer, since the pieces fall a fixed distance per refresh.
+- `PIECES_AT_ONCE`, `SPAWN_PCT`, `FALL_PX`, `AUTO_TURN_PCT`: how many pieces fall at a time
+  (1 or 2), the screen height they start from, how far they fall each refresh in pixels
+  (36: 3 rows for 12 px blocks, 2 rows for 16 px blocks; larger is a faster game but leaves
+  less time to press a button before the piece turns itself), and the screen height where an
+  unturned piece starts turning itself.
 - `BLINK_MODE`, `BLINK_COUNT`, `BLINK_MS`: see below. `HOLD_S`: how long the finished name
   stays up after the blinking (30 s).
 - `BANNER_PCT`, `BANNER_IMAGE`: the banner height and its image (see Banner).
+- `FOOTER_PCT`, `FOOTER_IMAGE`, `BOTTOM_MARGIN`: the footer band at the bottom, its image, and the
+  gap between the name and the footer (see Footer).
+
+## Footer
+
+A second red band runs across the bottom 25% of the screen, and the name lands right above it
+(`BOTTOM_MARGIN`, 8 px). It is meant for your web address or social handles; it ships with the
+placeholder "your web/@socials". Make your own the same way as the banner, on your computer:
+
+```
+python3 make_banner.py --text "yourname.com" --pct 25 --out tetris_footer.png
+mpremote cp tetris_footer.png :data/graphics/tetris_footer.png
+```
+
+(`--text "@you"` for a handle; the same Helvetica Bold as the banner.) If the image is not on the
+badge the footer is a plain red band; `FOOTER_PCT = 0` removes the footer.
+
+With the banner on top and the footer at the bottom the pieces have a play field of about 336 px
+between them, so they fall a fixed distance per refresh (`FALL_PX`) and the line where an
+unturned piece starts turning itself (`AUTO_TURN_PCT`, 50% of the screen height) is moved up as
+far as it must be for the piece to finish turning above the name: about 40% of the screen height
+for 16 px blocks, about 45% for 12 px blocks.
 
 ## Banner
 
@@ -86,8 +111,8 @@ fallback font (Apple Symbols by default, thickened a little to match the bold le
 `BANNER_PCT` in `tetris_tag.py` and `--pct` must agree (25% is 168 px). If the image
 is not on the badge, the banner is a plain red band.
 
-The panel can only make red with a full refresh, so the banner is drawn once, by the one full
-refresh when the app is launched (about 36 s, the first LED blinks red), and the partial
+The panel can only make red with a full refresh, so the banner and the footer are drawn once, by
+the one full refresh when the app is launched (about 36 s, the first LED blinks red), and the partial
 refreshes then leave it untouched.
 
 ## Partial refresh
@@ -97,12 +122,12 @@ partial refresh driver `firmware/badge/lib/epd_partial.py` (`PartialEPD`), which
 the pixels that changed, in about 0.65 s a frame (measured on a badge: median 629 ms):
 
 1. When the app is launched there is one normal full refresh to a blank field with the red
-   banner (about 36 s). Each new name after that starts with a partial wipe of the field
+   bands (about 36 s). Each new name after that starts with a partial wipe of the field
    instead: all black for one refresh, then all white (about 1.5 s), which also takes most
    ghosting off. The app opens its partial session on top of what the full refresh drew
    (`PartialEPD.start()` would flash the panel white first, which would also wipe the red
-   banner, so the app has its own `start_keep`). The partial pulls only touch the pixels around
-   what changed, so the banner is not driven.
+   bands, so the app has its own `start_keep`). The partial pulls only touch the pixels around
+   what changed, so the bands are not driven.
 2. The pieces then fall two at a time (see How to play). A fall is one refresh to show the
    pieces, a few more while they fall and turn, and one to drop each into place. A square,
    which looks the same turned, is never turned and drops straight away.
@@ -121,11 +146,11 @@ start of each name takes most of them off, and a full refresh (relaunch the app)
 
 Red pieces were tried (falling red, then one extra refresh to turn black) and did not work
 on a partial refresh: it is black and white by design and cannot make a good red on this
-panel. The red banner is unaffected: it is not driven.
+panel. The red bands are unaffected: they are not driven.
 
 Speed. Each refresh takes about 0.65 s, which is the driver's floor, so the length of a pass
 depends on how many refreshes it needs. A pass of "YOUR NAME" is 37 pieces in about 19 waves
-and, in simulation, about 120 refreshes if nobody presses a button (about 75 s) and fewer if you
+and, in simulation, about 100 refreshes if nobody presses a button (about 65 s) and fewer if you
 turn the pieces: a piece you turn right way up early drops sooner. The app prints `refresh ms:`
 over serial after every frame, so you can see the real times.
 
@@ -146,7 +171,7 @@ the next name and User B restarts the current one right away.
 
 ## Installing
 
-The commands at the top copy the app, its banner image and the display files it needs.
+The commands at the top copy the app, its two banner images and the display files it needs.
 The app needs the newer display driver on the badge as well as the app itself. Badges that
 shipped with older firmware are missing `rendered_luts.py`, which the partial refresh uses, and
 an updated `epd.py` (it has the display lock) and `large_png.py`, which `epd_partial.py` relies on. `mpremote ls :lib :data` shows
