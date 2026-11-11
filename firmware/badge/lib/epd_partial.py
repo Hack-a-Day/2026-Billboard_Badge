@@ -19,7 +19,8 @@ from micropython import const
 
 from lib import epd as _epd
 
-DRIVE_FRAMES = 10    # drive frames per change, of the 20 a pull runs (1-19)
+PULL_FRAMES = 20     # frames a pull runs: 20 (about 0.47 s) or 10 (about 0.24 s)
+DRIVE_FRAMES = 10    # drive frames per change, at most PULL_FRAMES - 1
 SESSION_PULLS = 60   # pulls per session; badge os proved 60
 TEMPERATURE = 0x84   # 0x50 + 2 * degrees C: 26 C, what both community drivers send
 
@@ -56,22 +57,29 @@ for _i in range(256):
     _REV[_i] = (_b & 0xAA) >> 1 | (_b & 0x55) << 1
 
 
-def partial_table(drive: int = DRIVE_FRAMES) -> bytearray:
-    """The 400-byte transition table for register 0xB0."""
+def partial_table(drive: int = DRIVE_FRAMES, frames: int = PULL_FRAMES) -> bytearray:
+    """The 400-byte transition table for register 0xB0, for a pull of 20 or 10 frames."""
     # 5 tables (old << 1 | new, then VCOM) x 10 groups x 8 bytes: level, TPa, TPb, SRab, TPc,
     # TPd, SRcd, RP. A level byte has 2 bits per phase, a in bits 7-6: 0 ground, 1 VDH, 2 VDL.
     # SRab = 0 skips phases a and b, so a group is one frame of c and one of d: 20 frames, the
-    # fewest the chips accept. No frame count is 0: that hangs the chips until a reset.
+    # fewest the chips accept with both c and d. No count in TPa, TPb, TPc, SRcd or RP may be 0:
+    # that hangs the chips until a reset.
+    # frames=10 sets TPd to 0 as well, so a group is one frame of c alone and a pull runs 10
+    # frames. badge os (github.com/yigitabi5444/supercon26-badge-os) found this shape for its
+    # calm frames: about 237 ms a pull, against about 474 ms for 20.
     # Tables 1 and 2 are equal and opposite, so every change is undone by its reverse.
-    if not 1 <= drive <= 19:
-        raise ValueError("drive must be 1-19: the last frame has to be ground")
+    if frames not in (10, 20):
+        raise ValueError("frames must be 10 or 20")
+    if not 1 <= drive <= frames - 1:
+        raise ValueError("drive must be 1 to frames - 1: the last frame has to be ground")
+    one = frames == 10
     t = bytearray(400)
     for k in range(50):
-        t[8 * k:8 * k + 8] = b"\x00\x01\x01\x00\x01\x01\x01\x01"
+        t[8 * k:8 * k + 8] = b"\x00\x01\x01\x00\x01\x00\x01\x01" if one else b"\x00\x01\x01\x00\x01\x01\x01\x01"
     for f in range(drive):
-        shift = 2 if f % 2 == 0 else 0      # phase c, then phase d
-        t[(10 + f // 2) * 8] |= 1 << shift  # table 1, white -> black: VDH
-        t[(20 + f // 2) * 8] |= 2 << shift  # table 2, black -> white: VDL
+        group, shift = (f, 2) if one else (f // 2, 2 if f % 2 == 0 else 0)  # phase c, then d
+        t[(10 + group) * 8] |= 1 << shift  # table 1, white -> black: VDH
+        t[(20 + group) * 8] |= 2 << shift  # table 2, black -> white: VDL
     return t
 
 
@@ -192,7 +200,7 @@ class PartialEPD:
         self._shown = None       # what the film shows
         self._stage = None       # one chip's bytes on their way out
         self._waits = _QUICK
-        self._lut = partial_table()
+        self._lut = partial_table(min(DRIVE_FRAMES, PULL_FRAMES - 1), PULL_FRAMES)
         self._temp = bytes((TEMPERATURE,))
         self._idx = bytearray(1)
         self._two = bytearray(2)
