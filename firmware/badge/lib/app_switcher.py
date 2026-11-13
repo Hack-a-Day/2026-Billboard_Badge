@@ -71,12 +71,28 @@ class AppSwitcher:
         apps_db.flush()
         apps_db.close()
         apps_file.close()
+        # Auto-launch only on startup, so the chooser remains reachable later.
+        self._auto_launch_pending = len(self.apps) == 1
 
+    def _launch_selected(self):
+        print(f"Switching to {self.apps[self.selection_idx].name}")
+        self.active_idx = self.selection_idx
+        self.apps[self.active_idx].launched = True
+        leds.clear_sequence()
+        leds.fill((0, 0, 0))
+        leds.write()
+        self.selecting_mode = False
 
     async def arun(self):
+        if self._auto_launch_pending:
+            self._auto_launch_pending = False
+            self.selection_idx = 0
+            self._launch_selected()
         while True:
             if self.selecting_mode:
-               
+                if not self.apps:
+                    await aio.sleep_ms(100)
+                    continue
                 ## Display current app from all installed apps
                 leds.menu_display(self.selection_idx, len(self.apps))
 
@@ -91,13 +107,7 @@ class AppSwitcher:
                         f"Selected app {self.selection_idx}: {self.apps[self.selection_idx].name}"
                     )
                 if UserA.pressed() or UserB.pressed():
-                    print(f"Switching to {self.apps[self.selection_idx].name}")
-                    self.active_idx = self.selection_idx
-                    self.apps[self.active_idx].launched = True
-                    leds.clear_sequence()
-                    leds.fill((0, 0, 0))
-                    leds.write()
-                    self.selecting_mode = False
+                    self._launch_selected()
                 await aio.sleep_ms(10)
             else:
                 if MenuMinus.pressed() or MenuPlus.pressed():
