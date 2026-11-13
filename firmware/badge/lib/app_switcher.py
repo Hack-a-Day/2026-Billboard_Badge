@@ -100,16 +100,29 @@ class AppSwitcher:
                     self.selecting_mode = False
                 await aio.sleep_ms(10)
             else:
-                if MenuMinus.pressed() or MenuPlus.pressed():
+                active = self.apps[self.active_idx]
+                # Apps that opt in own the Menu buttons and must provide a way
+                # to set exit_requested when the user wants the app chooser.
+                if (not getattr(active, "captures_menu_buttons", False)
+                        and (MenuMinus.pressed() or MenuPlus.pressed())):
                     self.selection_idx = self.active_idx
                     self.selecting_mode = True
                     ## Reset pressed state so that button doesn't advance menu, just enters menu state
                     MenuMinus._pressed_state = PRESSED_READ
                     MenuPlus._pressed_state = PRESSED_READ
                     print("Activated app switching")
-                await self.apps[self.active_idx].arun()
+                await active.arun()
+                if getattr(active, "exit_requested", False):
+                    active.exit_requested = False
+                    self.selection_idx = self.active_idx
+                    self.selecting_mode = True
+                    # A held button used to exit must not immediately act on
+                    # the chooser before the user has released it.
+                    for button in (MenuMinus, MenuPlus, UserA, UserB):
+                        button._pressed_state = PRESSED_READ
+                    print("App requested switcher")
                 await aio.sleep_ms(0)
-                self.apps[self.active_idx].launched = False
+                active.launched = False
 
 
 switcher = AppSwitcher()
