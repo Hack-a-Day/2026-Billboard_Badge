@@ -8,6 +8,11 @@ import sys
 class BaseApp:
     """Base class to derive other app from.
     Exists to make it easier to make app-generic behaviors.
+
+    An app may set ``captures_menu_buttons = True`` to handle Menu presses
+    itself. It must provide an accessible way to set ``exit_requested = True``
+    to return to the app chooser. The switcher clears that flag on exit.
+    Apps that do not opt in retain the normal Menu-button behavior.
     """
 
     def __init__(self, name: str | None = None) -> None:
