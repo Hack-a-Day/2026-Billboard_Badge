@@ -20,6 +20,7 @@ _web_last_activity = None
 _mode = "off"
 _deadline = None
 _generation = 0
+_automatic_connection = False
 _operations = 0
 _web_error = ""
 _hostname_restart_required = False
@@ -219,8 +220,8 @@ def radio_status():
     return (bool(station.active() or ap.active()), bool(station.isconnected()))
 
 
-async def connect_saved(ssid, duration_ms, on_radio=None):
-    global _mode, _deadline, _generation
+async def connect_saved(ssid, duration_ms, on_radio=None, remember=True):
+    global _mode, _deadline, _generation, _automatic_connection
     chosen = None
     for item in saved_networks():
         if item.get("ssid") == ssid:
@@ -251,14 +252,19 @@ async def connect_saved(ssid, duration_ms, on_radio=None):
                 _mode, _deadline = "off", None
                 raise ValueError("Wi-Fi connection timed out")
             await aio.sleep_ms(200)
-    config = _read_config()
-    config["networks"] = saved_networks()
-    config["ssid"] = ssid
-    config["wifi_password"] = chosen.get("password", "")
-    config["wifi_always_on"] = duration_ms is None
-    _write_json(CONFIG_PATH, config)
+    if remember:
+        config = _read_config()
+        config["networks"] = saved_networks()
+        config["ssid"] = ssid
+        config["wifi_password"] = chosen.get("password", "")
+        config["wifi_always_on"] = duration_ms is None
+        _write_json(CONFIG_PATH, config)
+    if not remember and _mode in ("timed", "always") and not _automatic_connection:
+        # A reconnect for a download must not replace the user's Wi-Fi timer.
+        return
     _mode = "always" if duration_ms is None else "timed"
     _deadline = None if duration_ms is None else time.ticks_add(time.ticks_ms(), duration_ms)
+    _automatic_connection = not remember
     _generation += 1
     if duration_ms is not None:
         aio.create_task(_turn_off_later(_generation, duration_ms))
@@ -277,10 +283,26 @@ def web_activity_recent():
 
 async def _turn_off_later(generation, duration_ms):
     await aio.sleep_ms(duration_ms)
-    while generation == _generation and _mode == "timed" and (_operations or web_activity_recent()):
-        await aio.sleep_ms(1000)
-    if generation == _generation and _mode == "timed":
-        turn_off()
+    while generation == _generation and _mode == "timed":
+        remaining = time.ticks_diff(_deadline, time.ticks_ms()) if _deadline is not None else 0
+        if remaining > 0:
+            await aio.sleep_ms(min(remaining, 1000))
+        elif _operations or web_activity_recent():
+            await aio.sleep_ms(1000)
+        else:
+            turn_off(remember=not _automatic_connection)
+            return
+
+
+def extend_automatic_connection(duration_ms):
+    """Keep only automatically enabled Wi-Fi on after a completed download."""
+    global _mode, _deadline
+    if not _automatic_connection:
+        return False
+    _mode = "timed"
+    _deadline = time.ticks_add(time.ticks_ms(), duration_ms)
+    aio.create_task(_turn_off_later(_generation, duration_ms))
+    return True
 
 
 async def _restart_after_hostname_change():
@@ -325,8 +347,8 @@ def _schedule_hostname_restart():
     aio.create_task(_restart_after_hostname_change())
 
 
-def turn_off():
-    global _mode, _deadline, _generation
+def turn_off(remember=True):
+    global _mode, _deadline, _generation, _automatic_connection
     station = network.WLAN(network.WLAN.IF_STA)
     try:
         station.disconnect()
@@ -334,15 +356,17 @@ def turn_off():
         pass
     station.active(False)
     _mode, _deadline = "off", None
+    _automatic_connection = False
     _generation += 1
-    config = _read_config()
-    config["wifi_always_on"] = False
-    _write_json(CONFIG_PATH, config)
+    if remember:
+        config = _read_config()
+        config["wifi_always_on"] = False
+        _write_json(CONFIG_PATH, config)
 
 
 def expire_if_due():
     if not _operations and not web_activity_recent() and _mode == "timed" and _deadline is not None and time.ticks_diff(time.ticks_ms(), _deadline) >= 0:
-        turn_off()
+        turn_off(remember=not _automatic_connection)
         return True
     return False
 

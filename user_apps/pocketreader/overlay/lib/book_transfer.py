@@ -86,7 +86,7 @@ def register_installed_book(book_id, expected_sha256=None):
         if len(header) > 65536:
             raise ValueError('Book header is too large')
         info = json.loads(header)
-        if not isinstance(info, dict) or info.get('id') != book_id or info.get('schema') not in (1, 2, 3):
+        if not isinstance(info, dict) or info.get('id') != book_id or info.get('schema') not in (1, 2, 3, 4):
             raise ValueError('Invalid book file')
         digest.update(header)
         while True:
@@ -196,7 +196,7 @@ def receive(name, length, initial, connection):
                 if len(header_line) > 65536:
                     raise ValueError('Book header is too large')
                 info = json.loads(header_line)
-                if not isinstance(info, dict) or info.get('schema') not in (1, 2, 3):
+                if not isinstance(info, dict) or info.get('schema') not in (1, 2, 3, 4):
                     raise ValueError('Unsupported book file')
                 stem = lib._safe_id(info.get('id'))
                 if not info.get('title') or not info.get('author'):

@@ -21,12 +21,14 @@ class LibraryFooter(unittest.TestCase):
                 if args[2] % 8:
                     raise ValueError('bitmap text y must align to an 8-pixel boundary')
                 self.texts.append(args)
+            def wrapped_text(self, text, x, y, width, scale, color, line_gap=0):
+                self.text(text, x, y, scale, color, width)
             def rect(self, *args): pass
             def fill_rect(self, *args): pass
             def wordmark(self, *args): pass
         lib = types.SimpleNamespace(load_progress=lambda: {}, most_recent_read=lambda _: None,
                                     has_download=lambda _: True)
-        scope = {'book_library': lib, 'PORTRAIT_WIDTH': 672, 'BLACK': 1, 'RED': 2,
+        scope = {'book_library': lib, 'PORTRAIT_WIDTH': 672, 'BLACK': 1, 'WHITE': 0, 'RED': 2,
                  'REFRESH_ROW': 8, 'LIBRARY_ROW_Y': 96, 'LIBRARY_ROW_HEIGHT': 96,
                  'OPEN_DYSLEXIC24': font, 'HACK16': font}
         exec(compile(code, str(SOURCE), 'exec'), scope)
@@ -44,7 +46,12 @@ class LibraryFooter(unittest.TestCase):
         status = next(item for item in canvas.texts if item[0] == 'LIBRARY UPDATED')
         self.assertGreaterEqual(status[2], label[2] + 40)
         self.assertEqual(status[1], 134)
-        self.assertTrue(any(item[0] == 'HOLD UP/DOWN FOR MORE BOOKS' for item in canvas.texts))
+        self.assertFalse(any(item[0] == 'HOLD UP/DOWN FOR MORE BOOKS' for item in canvas.texts))
+        app.update_status = 'BOOK ERROR: Download size differs from the current catalog'
+        canvas = Canvas(); app._draw_library(canvas)
+        self.assertTrue(any(item[0] == app.update_status and item[2] == 352 for item in canvas.texts))
+        self.assertTrue(any(item[0] == 'UP/DOWN TO DISMISS' for item in canvas.texts))
+        app.update_status = ''
         app.books = [{'id': str(i), 'title': 'Book {}'.format(i), 'author': 'Author', 'package': 'book.prb'} for i in range(8)]
         app.all_books = app.books + [{'id': 'extra'}]
         app._draw_book_border = lambda *_: None

@@ -490,6 +490,9 @@ class PocketReaderApp(BaseApp):
 
         if self._download_task is not None:
             self._device_idle_since = time.ticks_ms()
+            if getattr(self, '_download_cancellable', False) and PhysicalMenuMinus.pressed():
+                self._download_cancellable = False
+                self._download_task.cancel()
             return
         if self._catalog_task is not None or self._wifi_task is not None:
             self._device_idle_since = time.ticks_ms()
@@ -984,12 +987,20 @@ class PocketReaderApp(BaseApp):
         self._move_selection(1)
 
     def _move_selection(self, step):
+        had_error = getattr(self, 'update_status', '').startswith('BOOK ERROR:') or getattr(self, 'update_status', '').startswith('LIBRARY UNAVAILABLE:')
         slots = [(index, 0) for index in range(len(self.books))] + [(REFRESH_ROW, 0), (REFRESH_ROW, 1)]
         try:
             current = slots.index((self.selected, self._bottom_choice if self.selected == REFRESH_ROW else 0))
         except ValueError:
             current = 0
         self.selected, self._bottom_choice = slots[(current + step) % len(slots)]
+        if had_error:
+            self.update_status = ''
+            self._drawn_library_selection = None
+            self._dirty = True
+            self._small_update = False
+            self._show_selection_led()
+            return
         # While a refresh is running, keep just the newest requested row.
         # The framebuffer stays untouched until the panel is ready again.
         if not self._dirty and self._drawn_library_selection is not None:
@@ -1106,14 +1117,13 @@ class PocketReaderApp(BaseApp):
                     if old:
                         old.close()
             if entry.get('_starter') and not book_library.has_download(entry):
-                self.update_status = "DOWNLOADING " + entry['title']
-                self._download_active = True
-                animation = aio.create_task(self._animate_download())
+                self._download_cancellable = True
                 try:
-                    await starter_library.download(entry)
+                    await self._download_starter_book(entry)
                 finally:
-                    self._download_active = False
-                    await animation
+                    self._download_cancellable = False
+                    # Evicted starter books must return to the remote list.
+                    self._load_cached_catalog()
             package = entry.get("indexed") or entry.get("dynamic")
             if package:
                 entry = dict(entry)
@@ -1147,7 +1157,7 @@ class PocketReaderApp(BaseApp):
                     await animation
             self._chapters = self.reader.chapters()
             saved_word = previous_word
-            if legacy_excerpt and self.reader.header.get("schema") in (2, 3):
+            if legacy_excerpt and self.reader.header.get("schema") in (2, 3, 4):
                 mapped = await self.reader.locate_excerpt(legacy_excerpt, previous_word)
                 if mapped is not None:
                     saved_word = mapped
@@ -1172,6 +1182,11 @@ class PocketReaderApp(BaseApp):
             self._dirty = True
             self.update_status = "NO CHAPTER INDEX" if self._reading_light_mode == "chapter" and not self._chapters else ""
             leds.clear()
+        except aio.CancelledError:
+            self._close_reader()
+            self.update_status = "DOWNLOAD CANCELED"
+            self._dirty = True
+            self._show_selection_led()
         except Exception as exc:
             self._close_reader()
             self.update_status = "BOOK ERROR: " + str(exc)
@@ -1180,6 +1195,65 @@ class PocketReaderApp(BaseApp):
         finally:
             wifi_setup.end_operation()
             self._download_task = None
+
+    async def _show_download_status(self, message):
+        self.update_status = message
+        while not self.reader_display.ready():
+            await aio.sleep_ms(25)
+        self._dirty = True
+        self._small_update = True
+        self._draw()
+        # Let the display show the status before the transfer starts.
+        while not self.reader_display.ready():
+            await aio.sleep_ms(25)
+
+    async def _connect_starter_wifi(self):
+        if self._wifi_task is not None:
+            await self._wifi_task
+        radio_was_on, connected = wifi_setup.radio_status()
+        if connected:
+            return False
+        ssid = wifi_setup.preferred_ssid()
+        if not ssid:
+            networks = wifi_setup.saved_networks()
+            if len(networks) == 1:
+                ssid = networks[0]['ssid']
+        if not ssid:
+            raise book_library.LibraryError('Select a Wi-Fi network in settings first')
+        temporary_connection = not radio_was_on
+        try:
+            await self._show_download_status('CONNECTING ' + ssid)
+            await wifi_setup.connect_saved(ssid, None, self._update_wifi_indicator, remember=False)
+        except BaseException:
+            if temporary_connection:
+                wifi_setup.turn_off(remember=False)
+                self._update_wifi_indicator()
+            raise
+        return temporary_connection
+
+    async def _download_starter_book(self, entry):
+        temporary_connection = False
+        download_complete = False
+        try:
+            temporary_connection = await self._connect_starter_wifi()
+            await self._show_download_status('DOWNLOADING ' + entry['title'])
+            self._download_active = True
+            animation = aio.create_task(self._animate_download())
+            try:
+                # Let the first light appear before beginning the transfer.
+                await aio.sleep_ms(0)
+                await starter_library.download(entry)
+                download_complete = True
+                self._download_cancellable = False
+            finally:
+                self._download_active = False
+                await animation
+        finally:
+            if download_complete:
+                wifi_setup.extend_automatic_connection(120000)
+            elif temporary_connection:
+                wifi_setup.turn_off(remember=False)
+                self._update_wifi_indicator()
 
     async def _animate_download(self, color=(2, 2, 2)):
         index = 0
@@ -1197,8 +1271,10 @@ class PocketReaderApp(BaseApp):
 
     async def _refresh_catalog(self):
         wifi_setup.begin_operation()
+        temporary_connection = False
         try:
             if starter_library.enabled():
+                temporary_connection = await self._connect_starter_wifi()
                 await starter_library.refresh()
             self._load_cached_catalog()
             self.update_status = "LIBRARY UPDATED"
@@ -1206,6 +1282,9 @@ class PocketReaderApp(BaseApp):
             self._load_cached_catalog()
             self.update_status = "LIBRARY UNAVAILABLE: " + str(exc)
         finally:
+            if temporary_connection:
+                wifi_setup.turn_off(remember=False)
+                self._update_wifi_indicator()
             wifi_setup.end_operation()
             if not self.detail and not self._settings_menu and not self._wifi_menu:
                 self._select_first_on_library_page()
@@ -2190,7 +2269,8 @@ class PocketReaderApp(BaseApp):
         canvas.rect(4, 4, 60, 44, 1, BLACK)
         canvas.rect(68, 4, 60, 44, 1, BLACK)
         canvas.text("MENU-", 8, 8, 1, BLACK, 52)
-        canvas.text("PREV" if reader else "UP", 8, 24, 1, BLACK, 52)
+        first_hint = "PREV" if reader else ("STOP" if getattr(self, '_download_cancellable', False) else "UP")
+        canvas.text(first_hint, 8, 24, 1, BLACK, 52)
         canvas.text("USR-B", 72, 8, 1, BLACK, 52)
         canvas.text("NEXT" if reader else "DOWN", 72, 24, 1, BLACK, 52)
         if reader:
@@ -2284,6 +2364,12 @@ class PocketReaderApp(BaseApp):
                 self._draw_footer_border(canvas, index, True)
             canvas.text(label, x, y + 8, 1, BLACK, 210)
 
+        show_error = self.update_status.startswith('BOOK ERROR:') or self.update_status.startswith('LIBRARY UNAVAILABLE:')
+        if show_error and not self._remove_prompt:
+            canvas.fill_rect(64, 328, 544, 240, WHITE)
+            canvas.rect(64, 328, 544, 240, 3, BLACK)
+            canvas.wrapped_text(self.update_status, 80, 352, 512, 1, BLACK, line_gap=0)
+            canvas.text('UP/DOWN TO DISMISS', 80, 536, 1, BLACK, 512)
         if self._remove_prompt:
             canvas.fill_rect(75, 350, 530, 160, WHITE)
             canvas.rect(75, 350, 530, 160, 3, BLACK)
@@ -2296,12 +2382,13 @@ class PocketReaderApp(BaseApp):
         page_label = "PAGE {}/{}".format(self.library_page + 1, page_count)
         page_x = PORTRAIT_WIDTH - 32 - HACK16.measure(page_label)
         canvas.text(page_label, page_x, y + 8, 1, BLACK, PORTRAIT_WIDTH - 64)
-        if self.update_status:
-            canvas.text(self.update_status, 134, 912, 1, RED, PORTRAIT_WIDTH - 140)
-        if page_count > 1:
+        if self.update_status and not show_error:
+            canvas.wrapped_text(self.update_status, 134, 912, PORTRAIT_WIDTH - 140,
+                                1, RED, line_gap=0)
+        elif page_count > 1 and not show_error:
             canvas.text("HOLD UP/DOWN FOR MORE BOOKS", 134, 936, 1, BLACK,
                         PORTRAIT_WIDTH - 140)
-        if not self._remove_prompt and not self._bottom_menu:
+        if not self._remove_prompt and not self._bottom_menu and not show_error:
             self._drawn_library_selection = self.selected
             self._drawn_library_choice = self._bottom_choice
 
@@ -2463,15 +2550,17 @@ class PocketReaderApp(BaseApp):
         family = self.reader.font_family if self.reader.header.get('schema') != 1 else 'opendyslexic'
         reader_font, line_spacing, line_count = READER_FAMILIES[family][size]
         for index, line in enumerate(lines[:line_count]):
-            canvas.text(
-                line,
-                32,
-                80 + index * line_spacing,
-                2,
-                BLACK,
-                PORTRAIT_WIDTH - 64,
-                reader_font,
-            )
+            display_font = reader_font
+            center = False
+            if self.reader.header.get('schema') == 4 and line[:2] in ('\x1fC', '\x1fH', '\x1fL'):
+                marker, line = line[:2], line[2:]
+                center = marker in ('\x1fC', '\x1fH')
+                if marker in ('\x1fH', '\x1fL'):
+                    larger = {'small':'medium', 'medium':'large', 'large':'xl', 'xl':'xl'}[size]
+                    display_font = READER_FAMILIES[family][larger][0]
+            x = max(32, (PORTRAIT_WIDTH - display_font.measure(line)) // 2) if center else 32
+            canvas.text(line, x, 80 + index * line_spacing, 2, BLACK,
+                        PORTRAIT_WIDTH - 64, display_font)
         self._draw_bottom_hints(canvas, reader=True)
         canvas.text("{} / {}".format(self.current_page + 1, len(self.reader.pages)), 520, 928, 1, BLACK, 120)
         if self.update_status:

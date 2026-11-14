@@ -33,18 +33,6 @@ def load_catalog():
     return catalog.get('books', []) if isinstance(catalog, dict) and catalog.get('schema') == 1 else []
 
 
-def _request(url):
-    if not wifi_setup.radio_status()[1]:
-        raise book_library.LibraryError('Connect Wi-Fi first')
-    import requests
-    response = requests.get(url)
-    if response.status_code != 200:
-        status = response.status_code
-        response.close()
-        raise book_library.LibraryError('Library HTTP status {}'.format(status))
-    return response
-
-
 def _valid_hash(value):
     return isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value)
 
@@ -129,31 +117,67 @@ async def refresh():
         raise book_library.LibraryError('Starter library unavailable: ' + str(exc))
 
 
+async def _open_download(url, expected_size):
+    if not wifi_setup.radio_status()[1]:
+        raise book_library.LibraryError('Connect Wi-Fi first')
+    if not url.startswith(BASE):
+        raise book_library.LibraryError('Invalid starter download URL')
+    name = url[len(BASE):]
+    if not name or '/' in name or '..' in name or '\r' in name or '\n' in name:
+        raise book_library.LibraryError('Invalid starter download name')
+    reader, writer = await aio.wait_for(
+        aio.open_connection('prxl.geektoybox.com', 443, ssl=True), 15)
+    try:
+        request = ('GET /library/' + name + ' HTTP/1.0\r\n'
+                   'Host: prxl.geektoybox.com\r\nConnection: close\r\n\r\n')
+        writer.write(request.encode())
+        await aio.wait_for(writer.drain(), 15)
+        status = await aio.wait_for(reader.readline(), 15)
+        parts = status.split()
+        if len(status) > 1024 or len(parts) < 2 or parts[1] != b'200':
+            raise book_library.LibraryError('Starter library HTTP error')
+        header_size = 0
+        while True:
+            line = await aio.wait_for(reader.readline(), 15)
+            header_size += len(line)
+            if not line or header_size > 8192:
+                raise book_library.LibraryError('Invalid starter library response')
+            if line in (b'\r\n', b'\n'):
+                break
+            key, sep, value = line.partition(b':')
+            if not sep:
+                raise book_library.LibraryError('Invalid starter library response')
+            key, value = key.strip().lower(), value.strip().lower()
+            if key == b'content-length' and int(value) != expected_size:
+                raise book_library.LibraryError('Download size differs from catalog')
+            if key == b'transfer-encoding' and value != b'identity':
+                raise book_library.LibraryError('Unsupported starter library response')
+        return reader, writer
+    except BaseException:
+        writer.close()
+        await writer.wait_closed()
+        raise
+
+
 async def _fetch_file(url, temporary, expected_size, expected_hash):
-    response = _request(url)
+    reader, writer = await _open_download(url, expected_size)
     digest = hashlib.sha256()
     received = 0
     try:
         with open(temporary, 'wb') as output:
-            raw = getattr(response, 'raw', None)
-            if raw is None:
-                data = response.content
-                received = len(data)
+            while True:
+                chunk = await aio.wait_for(reader.read(min(2048, expected_size + 1 - received)), 15)
+                if not chunk:
+                    break
+                received += len(chunk)
                 if received > expected_size:
                     raise book_library.LibraryError('Download too large')
-                digest.update(data); output.write(data)
-            else:
-                while True:
-                    chunk = raw.read(min(2048, expected_size + 1 - received))
-                    if not chunk:
-                        break
-                    received += len(chunk)
-                    if received > expected_size:
-                        raise book_library.LibraryError('Download too large')
-                    digest.update(chunk); output.write(chunk)
-                    await aio.sleep_ms(0)
+                digest.update(chunk)
+                output.write(chunk)
+                await aio.sleep_ms(0)
     finally:
-        response.close()
+        writer.close()
+        await writer.wait_closed()
     if received != expected_size or binascii.hexlify(digest.digest()).decode() != expected_hash:
         raise book_library.LibraryError('Download verification failed')
 
@@ -185,13 +209,34 @@ async def download(entry):
         raise book_library.LibraryError('Book already exists; refresh library')
     if book_library._exists(index):
         raise book_library.LibraryError('An index already exists for this book')
+
+    # Resolve the selected title against the live catalog before considering
+    # eviction: cached index sizes can change after a library update.
+    catalog = _validate_catalog(json.loads(await _catalog_bytes()))
+    entry = None
+    for item in catalog['books']:
+        if item['id'] == book_id:
+            entry = item
+            break
+    if entry is None:
+        raise book_library.LibraryError('Book is no longer in the library')
+    # Verify both URLs and advertised sizes before removing any existing copy.
+    for suffix, size in (('.pri', entry['index_size']), ('.prb', entry['size'])):
+        _, writer = await _open_download(BASE + book_id + suffix, size)
+        writer.close()
+        try:
+            await aio.wait_for(writer.wait_closed(), 2)
+        except Exception:
+            # A server may still be sending the body after the header check.
+            pass
     try:
         os.mkdir(book_library.BOOK_DIR)
     except OSError:
         pass
-    stats = os.statvfs(book_library.BOOK_DIR)
-    if stats[0] * stats[3] < entry['size'] + entry['index_size'] + 32768:
-        raise book_library.LibraryError('Not enough space; remove a book first')
+    recoverable = {item['id']: item['sha256'] for item in catalog['books']}
+    book_library.ensure_space(entry['size'] + entry['index_size'] + MAX_CATALOG + 32768,
+                              book_id, recoverable=recoverable)
+    book_library._write_json(CATALOG_PATH, catalog)
     book_tmp, index_tmp = path + '.tmp', index + '.tmp'
     try:
         await _fetch_starter_file(book_id + '.pri', index_tmp, entry['index_size'], entry['index_sha256'])

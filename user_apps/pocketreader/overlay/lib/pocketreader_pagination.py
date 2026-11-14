@@ -3,8 +3,16 @@
 # Increment for changes to page geometry or font rendering that don't alter
 # advance widths or the number of lines. Existing indexes then rebuild.
 PAGINATION_VERSION = 1
+MARKUP_LAYOUT_VERSION = 2
+CENTER = "\x1fC"
+HEADING = "\x1fH"
+LARGE = "\x1fL"
 
-def layout_lines(handle, data_offset, advances, position=None, body_end=None):
+
+def needs_heading_page_break(text, count, limit, has_larger_font):
+    return bool(has_larger_font and count == limit - 1 and text and (text.startswith(HEADING) or text.startswith(LARGE)))
+
+def layout_lines(handle, data_offset, advances, position=None, body_end=None, heading_advances=None, markup=False):
     """Yield wrapped lines with file coordinates and paragraph boundaries."""
     handle.seek(data_offset if position is None else position)
     word_number = 0
@@ -19,18 +27,23 @@ def layout_lines(handle, data_offset, advances, position=None, body_end=None):
         if record == "\x1e":
             yield (offset, 0, word_number, None)
             continue
+        marker = ''
+        if markup and (record.startswith(CENTER) or record.startswith(HEADING) or record.startswith(LARGE)):
+            marker, record = record[:2], record[2:]
+        selected_advances = heading_advances if marker in (HEADING, LARGE) and heading_advances is not None else advances
+        has_larger_font = marker in (HEADING, LARGE) and heading_advances is not None and heading_advances != advances
         words = record.split()
         current = ""
         current_width = 0
         first_word = word_number
         line_index = 0
-        space_width = advances[0]
+        space_width = selected_advances[0]
         for word in words:
             chunks = []
             chunk = ""
             width = 0
             for character in word:
-                char_width = advances[ord(character)-32] if 32 <= ord(character) <= 126 else advances[31]
+                char_width = selected_advances[ord(character)-32] if 32 <= ord(character) <= 126 else selected_advances[31]
                 if chunk and width + char_width > 608:
                     chunks.append((chunk, width))
                     chunk = ""
@@ -41,8 +54,11 @@ def layout_lines(handle, data_offset, advances, position=None, body_end=None):
                 chunks.append((chunk, width))
             for chunk, width in chunks:
                 if current and current_width + space_width + width > 608:
-                    yield (offset, line_index, first_word, current)
+                    yield (offset, line_index, first_word, marker + current)
                     line_index += 1
+                    if has_larger_font:
+                        yield (offset, line_index, word_number, "")
+                        line_index += 1
                     current = ""
                     current_width = 0
                     first_word = word_number
@@ -53,8 +69,11 @@ def layout_lines(handle, data_offset, advances, position=None, body_end=None):
                 current_width += width
             word_number += 1
         if current:
-            yield (offset, line_index, first_word, current)
+            yield (offset, line_index, first_word, marker + current)
             line_index += 1
+            if has_larger_font:
+                yield (offset, line_index, word_number, "")
+                line_index += 1
             yield (offset, line_index, word_number, "")
 
 

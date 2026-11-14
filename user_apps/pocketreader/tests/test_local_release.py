@@ -21,6 +21,46 @@ def load(name, path):
 
 
 class LocalRelease(unittest.TestCase):
+    def test_release_reader_opens_new_markup_and_legacy_books(self):
+        import asyncio
+        from zipfile import ZipFile
+        badge = ROOT.parent.parent.parent
+        sys.path.insert(0, str(badge / 'companion'))
+        from pocketreader_companion import convert_book
+        lib_package=types.ModuleType('lib')
+        with patch.dict(sys.modules, {'network':types.ModuleType('network'), 'lib':lib_package}):
+            for name in ('pocketreader_font_data','pocketreader_pagination'):
+                setattr(lib_package,name,load(name,ROOT/'overlay/lib'/(name+'.py')))
+            lib_package.wifi_setup=types.ModuleType('wifi_setup')
+            library=load('release_markup_library',ROOT/'overlay/lib/book_library.py')
+            with tempfile.TemporaryDirectory() as tmp:
+                work=Path(tmp);library.BOOK_DIR=str(work)
+                source=work/'formatted.epub'
+                with ZipFile(source,'w') as epub:
+                    epub.writestr('META-INF/container.xml','<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>')
+                    epub.writestr('book.opf','<package xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata><dc:title>Book</dc:title><dc:creator>Writer</dc:creator></metadata><manifest><item id="body" href="body.xhtml"/></manifest><spine><itemref idref="body"/></spine></package>')
+                    epub.writestr('body.xhtml','<html><body><div class="titlepage" style="text-align:center"><h1>Book</h1><p>Writer</p></div><p>Text follows.</p></body></html>')
+                book,index=convert_book(source,work)
+                package=library.BookPackage({'id':book.stem,'sha256':hashlib.sha256(book.read_bytes()).hexdigest()})
+                old_sleep=getattr(asyncio,'sleep_ms',None);asyncio.sleep_ms=lambda _:asyncio.sleep(0)
+                try:
+                    for family in ('opendyslexic','ubuntu','tinos'):
+                        for size in ('small','medium','large','xl'):
+                            self.assertTrue(package.has_index(size,family))
+                            asyncio.run(package.prepare(size,family))
+                            lines,_=package.read_page(0)
+                            self.assertIn('\x1fHBook',lines)
+                            self.assertIn('\x1fCWriter',lines)
+                finally:
+                    package.close()
+                    if old_sleep is None: del asyncio.sleep_ms
+                    else: asyncio.sleep_ms=old_sleep
+                sample=next((ROOT/'books').glob('*.prb'))
+                shutil.copy(sample,work/sample.name);shutil.copy(sample.with_suffix('.pri'),work/sample.with_suffix('.pri').name)
+                legacy=library.BookPackage({'id':sample.stem,'sha256':hashlib.sha256(sample.read_bytes()).hexdigest()})
+                try: self.assertTrue(legacy.has_index('medium'))
+                finally: legacy.close()
+
     def test_installer_preserves_custom_sleep_image(self):
         installer = load('release_installer_image', ROOT / 'install.py')
         with patch.object(installer.subprocess, 'run') as execute, patch.object(installer, 'run') as copy:

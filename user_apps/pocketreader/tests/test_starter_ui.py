@@ -46,6 +46,22 @@ class StarterUI(unittest.TestCase):
         self.assertEqual(remote.rectangles,[])
         self.assertEqual(len(local.rectangles),1)
 
+    def test_menu_minus_cancels_active_starter_download(self):
+        events=[]
+        wifi=types.SimpleNamespace(settings_generation=lambda:0)
+        transfer=types.SimpleNamespace(generation=lambda:0)
+        clock=types.SimpleNamespace(ticks_ms=lambda:123)
+        button=types.SimpleNamespace(pressed=lambda:True)
+        App=load({'run'}, {'wifi_setup':wifi,'book_transfer':transfer,'time':clock,'PhysicalMenuMinus':button})
+        app=App();app.launched=False;app.detail=False
+        app._transfer_generation=app._web_settings_generation=0;app._exit_pending=False
+        app._update_library_idle_lights=lambda:None
+        app._download_task=types.SimpleNamespace(cancel=lambda:events.append('cancel'))
+        app._download_cancellable=True
+        app.run()
+        self.assertEqual(events,['cancel'])
+        self.assertFalse(app._download_cancellable)
+
     def test_wifi_menu_responds_while_connection_or_catalog_runs(self):
         wifi=types.SimpleNamespace(settings_generation=lambda:0,expire_if_due=lambda:None)
         transfer=types.SimpleNamespace(generation=lambda:0)

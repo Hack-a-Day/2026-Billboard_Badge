@@ -373,32 +373,63 @@ def most_recent_read(entries):
     return index if order > 0 else None
 
 
-def ensure_space(required, protected_id):
-    """Evict oldest unread downloads first, then least recently read books."""
+def ensure_space(required, protected_id, recoverable=None):
+    """Evict eligible downloads, oldest unread then least recently read."""
+    def free_bytes():
+        stats = os.statvfs(BOOK_DIR)
+        return stats[0] * stats[3]
+    if free_bytes() >= required:
+        return
     state = installed_state()
     read_order = _read_json(READING_STATE_PATH, {}).get("books", {})
     candidates = []
     for book_id, metadata in state.items():
-        if book_id == protected_id or metadata.get("local_only") or not _exists(package_path({"id": book_id})):
+        if book_id == protected_id or not _exists(package_path({"id": book_id})):
+            continue
+        if recoverable is not None:
+            # Only evict a copy that can be downloaded again byte-for-byte.
+            expected = recoverable.get(book_id)
+            if not expected or expected != metadata.get('sha256'):
+                continue
+            try:
+                digest = hashlib.sha256()
+                with open(package_path({'id': book_id}), 'rb') as source:
+                    while True:
+                        data = source.read(4096)
+                        if not data:
+                            break
+                        digest.update(data)
+                if binascii.hexlify(digest.digest()).decode() != expected:
+                    continue
+            except OSError:
+                continue
+        elif metadata.get("local_only"):
             continue
         order = read_order.get(book_id)
         candidates.append((0 if order is None else 1,
                            int(metadata.get("download_order", 0)) if order is None else int(order),
                            book_id))
     candidates.sort()
-    def free_bytes():
-        stats = os.statvfs(BOOK_DIR)
-        return stats[0] * stats[3]
     available = free_bytes()
     if available < required:
         for _, _, book_id in candidates:
             available += os.stat(package_path({"id": book_id}))[6]
+            if recoverable is not None:
+                try:
+                    available += os.stat(BOOK_DIR + '/' + book_id + '.pri')[6]
+                except OSError:
+                    pass
         if available < required:
             raise LibraryError("Not enough storage for this book")
     for _, _, book_id in candidates:
         if free_bytes() >= required:
             return
         remove_download({"id": book_id})
+        if recoverable is not None:
+            try:
+                os.remove(BOOK_DIR + '/' + book_id + '.pri')
+            except OSError:
+                pass
     if free_bytes() < required:
         raise LibraryError("Not enough storage for this book")
 
@@ -473,7 +504,7 @@ class BookPackage:
         self.entry = entry
         self.handle = open(package_path(entry), "rb")
         self.header = json.loads(self.handle.readline())
-        if self.header.get("schema") not in (1, 2, 3) or self.header.get("id") != entry.get("id"):
+        if self.header.get("schema") not in (1, 2, 3, 4) or self.header.get("id") != entry.get("id"):
             self.handle.close()
             raise LibraryError("Book package metadata does not match catalog")
         self.data_offset = self.handle.tell()
@@ -486,8 +517,24 @@ class BookPackage:
         self.lines_per_page = 0
 
     def _lines(self, position=None):
+        markup = self.header.get('schema') == 4
+        larger = self._larger_metrics(self.size, self.font_family) if markup else None
         return pagination.layout_lines(self.handle, self.data_offset, self.advances,
-                                       position, self.body_end)
+                                       position, self.body_end, heading_advances=larger, markup=markup)
+
+    def _layout_version(self):
+        return pagination.MARKUP_LAYOUT_VERSION if self.header.get('schema') == 4 else pagination.PAGINATION_VERSION
+
+    def _larger_metrics(self, size, family):
+        larger = {'small':'medium', 'medium':'large', 'large':'xl', 'xl':'xl'}[size]
+        return self._font_metrics(larger, family)[0]
+
+    def _larger_metrics_for_key(self, key):
+        if ':' in key:
+            family, size = key.split(':', 1)
+        else:
+            family, size = 'opendyslexic', key
+        return self._larger_metrics(size, family)
 
     def _index_path(self):
         return BOOK_DIR + "/" + _safe_id(self.entry["id"]) + ".pri"
@@ -524,9 +571,13 @@ class BookPackage:
         selected = sizes.get(size, {})
         if not isinstance(selected, dict):
             return None
-        if (selected.get("layout_version") != pagination.PAGINATION_VERSION or selected.get("metrics_sha256") != metrics
+        if (selected.get("layout_version") != self._layout_version() or selected.get("metrics_sha256") != metrics
                 or selected.get("lines") != lines):
             return None
+        if self.header.get('schema') == 4:
+            larger_hash = binascii.hexlify(hashlib.sha256(bytes(self._larger_metrics_for_key(size))).digest()).decode()
+            if selected.get('heading_metrics_sha256') != larger_hash:
+                return None
         pages = selected.get("pages")
         if selected.get("encoding") == "delta-varint-base64":
             try:
@@ -558,10 +609,13 @@ class BookPackage:
             index = {"version": 1, "book_id": self.entry["id"],
                      "sha256": self.entry.get("sha256"), "sizes": {}}
         index.setdefault("sizes", {})[size] = {
-            "layout_version": pagination.PAGINATION_VERSION, "lines": lines,
+            "layout_version": self._layout_version(), "lines": lines,
             "metrics_sha256": binascii.hexlify(hashlib.sha256(bytes(advances)).digest()).decode(),
             "encoding": "delta-varint-base64",
             "pages": pagination.pack_page_positions([[page[0] - self.data_offset, page[1], page[2]] for page in pages])}
+        if self.header.get('schema') == 4:
+            index['sizes'][size]['heading_metrics_sha256'] = binascii.hexlify(
+                hashlib.sha256(bytes(self._larger_metrics_for_key(size))).digest()).decode()
         _write_json(path, index)
 
     def _font_metrics(self, size, family):
@@ -592,6 +646,9 @@ class BookPackage:
             if text is None:
                 count = 0
                 continue
+            if pagination.needs_heading_page_break(text, count, self.lines_per_page,
+                    self.header.get('schema') == 4 and self._larger_metrics(size, family) != self.advances):
+                count = 0
             if count == 0:
                 if not text:
                     continue
@@ -616,13 +673,17 @@ class BookPackage:
         return bool(self._read_size_index(key, advances, count))
 
     def _embedded_metadata(self, size, advances, lines):
-        if (self.header.get("schema") != 3 or self.header.get("index_version") != 1
-                or pagination.PAGINATION_VERSION != 1):
+        schema = self.header.get("schema")
+        if schema not in (3, 4) or self.header.get("index_version") != self._layout_version():
             return None
         meta = self.header.get("indexes", {}).get(size, {})
         metrics = binascii.hexlify(hashlib.sha256(bytes(advances)).digest()).decode()
         if meta.get("metrics_sha256") != metrics or meta.get("lines") != lines:
             return None
+        if schema == 4:
+            larger_hash = binascii.hexlify(hashlib.sha256(bytes(self._larger_metrics_for_key(size))).digest()).decode()
+            if meta.get('heading_metrics_sha256') != larger_hash:
+                return None
         offset, count = int(meta.get("offset", -1)), int(meta.get("count", 0))
         if offset < 0 or count < 1 or count > 100000 or self.body_end is None:
             return None
@@ -650,7 +711,7 @@ class BookPackage:
 
     async def locate_excerpt(self, excerpt, previous_word):
         """Match a legacy page's text to its word position in a reflowable book."""
-        if self.header.get("schema") not in (2, 3) or not excerpt:
+        if self.header.get("schema") not in (2, 3, 4) or not excerpt:
             return None
         needle = excerpt.strip()[:60]
         self.handle.seek(self.data_offset)
@@ -663,6 +724,8 @@ class BookPackage:
             if not record:
                 return best
             text = record.decode("utf-8", "replace")
+            if self.header.get('schema') == 4 and text[:2] in (pagination.CENTER, pagination.HEADING, pagination.LARGE):
+                text = text[2:]
             found = text.find(needle)
             if found >= 0:
                 candidate = word + len(text[:found].split())
@@ -681,12 +744,15 @@ class BookPackage:
     def read_page(self, page):
         page = max(0, min(int(page), len(self.pages) - 1))
         offset, length, start_word = self.pages[page]
-        if self.header["schema"] in (2, 3):
+        if self.header["schema"] in (2, 3, 4):
             lines = []
             for record_offset, line_index, _, text in self._lines(offset):
                 if record_offset == offset and line_index < length:
                     continue
                 if text is None:
+                    break
+                if pagination.needs_heading_page_break(text, len(lines), self.lines_per_page,
+                        self.header.get('schema') == 4 and self._larger_metrics(self.size, self.font_family) != self.advances):
                     break
                 lines.append(text)
                 if len(lines) >= self.lines_per_page:

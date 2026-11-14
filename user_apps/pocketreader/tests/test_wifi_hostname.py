@@ -10,11 +10,40 @@ from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / 'overlay/lib/wifi_setup.py'
 
 class HostnameTest(unittest.TestCase):
+    def test_automatic_wifi_deadline_extends_without_changing_manual_wifi(self):
+        wifi = self.load_wifi(); now={'ms':100}; scheduled=[]
+        wifi.time=types.SimpleNamespace(ticks_ms=lambda:now['ms'], ticks_add=lambda a,b:a+b,
+                                        ticks_diff=lambda a,b:a-b)
+        def collect(coroutine): scheduled.append(coroutine)
+        wifi.aio=types.SimpleNamespace(create_task=collect)
+        wifi._automatic_connection=True; wifi._mode='always'; wifi._generation=3
+        self.assertTrue(wifi.extend_automatic_connection(120000))
+        self.assertEqual(wifi._deadline,120100)
+        now['ms']=30000
+        self.assertTrue(wifi.extend_automatic_connection(120000))
+        self.assertEqual(wifi._deadline,150000)
+        self.assertEqual(wifi._mode,'timed')
+        wifi._automatic_connection=False
+        self.assertFalse(wifi.extend_automatic_connection(120000))
+        self.assertEqual(wifi._deadline,150000)
+        for task in scheduled: task.close()
+
+    def test_extended_deadline_is_respected_by_original_timer(self):
+        wifi=self.load_wifi(); now={'ms':0}; events=[]
+        wifi.time=types.SimpleNamespace(ticks_ms=lambda:now['ms'], ticks_diff=lambda a,b:a-b)
+        wifi._mode='timed'; wifi._deadline=200; wifi._generation=1
+        wifi._automatic_connection=True
+        wifi.turn_off=lambda remember=True:events.append((now['ms'],remember))
+        async def sleep_ms(ms): now['ms']+=ms
+        wifi.aio=types.SimpleNamespace(sleep_ms=sleep_ms)
+        asyncio.run(wifi._turn_off_later(1,100))
+        self.assertEqual(events,[(200,False)])
+
     def test_web_activity_delays_wifi_expiration(self):
         wifi = self.load_wifi()
         now = {'ms': 0}; events = []
         wifi.time = types.SimpleNamespace(ticks_ms=lambda: now['ms'], ticks_diff=lambda a, b: a-b)
-        wifi.turn_off = lambda: events.append('off')
+        wifi.turn_off = lambda remember=True: events.append('off')
         wifi._mode = 'timed'; wifi._deadline = 100; wifi._generation = 1
         wifi._record_web_activity()
         now['ms'] = 100
@@ -109,6 +138,31 @@ class HostnameTest(unittest.TestCase):
         wifi.aio = types.SimpleNamespace(create_task=discard_task)
         asyncio.run(wifi.connect_saved('home', None))
         self.assertEqual(events, [('hostname', 'my-reader'), ('active', True), ('connect', 'home')])
+
+    def test_temporary_connection_does_not_change_saved_wifi_settings(self):
+        wifi = self.load_wifi(); writes = []
+        class Station:
+            enabled = False
+            connected = False
+            def active(self, value=None):
+                if value is not None: self.enabled = value
+                return self.enabled
+            def isconnected(self): return self.connected
+            def connect(self, ssid, password): self.connected = True
+            def disconnect(self): self.connected = False
+        station = Station()
+        wlan = type('WLAN', (), {'IF_STA': 0, '__new__': lambda cls, interface: station})
+        wifi.network = types.SimpleNamespace(WLAN=wlan, hostname=lambda _: None)
+        wifi._read_config = lambda: {'hostname': 'my-reader', 'wifi_always_on': True}
+        wifi._write_json = lambda *_: writes.append(True)
+        wifi.saved_networks = lambda: [{'ssid':'home', 'password':'example'}]
+        wifi.time = types.SimpleNamespace(ticks_ms=lambda:100, ticks_add=lambda a,b:a+b)
+        def discard_task(coroutine): coroutine.close()
+        wifi.aio = types.SimpleNamespace(create_task=discard_task)
+        asyncio.run(wifi.connect_saved('home', None, remember=False))
+        wifi.turn_off(remember=False)
+        self.assertEqual(writes, [])
+        self.assertFalse(station.enabled)
 
     def test_expired_timer_does_not_reconnect(self):
         wifi = self.load_wifi(); events = []; state = {'hostname': 'my-reader'}

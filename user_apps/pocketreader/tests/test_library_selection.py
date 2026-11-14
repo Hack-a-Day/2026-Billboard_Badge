@@ -28,6 +28,15 @@ class LibrarySelection(unittest.TestCase):
                      'display': types.SimpleNamespace(black=None, red=None)}
         exec(compile(code, str(SOURCE), 'exec'), cls.scope)
 
+    def test_moving_selection_dismisses_error_with_full_refresh(self):
+        app=self.scope['App']();app.books=[{},{}];app.selected=0;app._bottom_choice=0
+        app.update_status='BOOK ERROR: detailed explanation';app._show_selection_led=lambda:None
+        app._move_selection(1)
+        self.assertEqual(app.update_status,'')
+        self.assertEqual(app.selected,1)
+        self.assertTrue(app._dirty)
+        self.assertFalse(app._small_update)
+
     def test_incremental_border_matches_full_draw(self):
         app = self.scope['App'](); initial, expected = Canvas(), Canvas()
         for index in range(7):

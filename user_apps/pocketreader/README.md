@@ -32,6 +32,15 @@ In the Wi-Fi menu, **Starter Library** is optional and off by default. Turn it
 on and connect to a saved Wi-Fi network to browse the public books alongside
 your own. Select a title to download it; turning the option off hides the
 available online titles but keeps books already downloaded. No account is required.
+When a download turns Wi-Fi on automatically, it stays on for two minutes after
+the download, and each subsequent download extends that window. Press Menu−
+during a download to cancel it.
+
+Some library books and their indexes are large. The reader can make room by
+removing eligible downloaded library books, but a large book may still need
+more free storage. If so, remove other files or applications you no longer
+need and try again. The reader does not remove other applications for you.
+
 In hotspot setup, access is protected by the hotspot password; anyone connected
 to that hotspot can open the setup page. When accessed on a saved Wi-Fi network,
 the page requires the reader's separate web password. Scan for nearby networks,
@@ -51,6 +60,25 @@ resize and convert a picture for the badge. When Quick Boot is enabled, red
 pixels are shown as a black-and-white pattern that appears gray; the saved image
 is retained, so red returns when Quick Boot is disabled. Reinstalling the
 reader preserves an existing sleep image.
+
+## Indicator lights
+
+- A white light marks the selected row. During a book download, a moving white
+  light shows that the transfer is in progress.
+- Moving blue lights mean the reader is preparing a missing page index for the
+  current font and size.
+- Red hold-progress lights warn that holding the selection button will open the
+  confirmation for removing a downloaded book. The book is removed only if
+  you confirm.
+
+The availability-light setting can add dim yellow lights behind the download
+animation. Brightness and the other light options are in LED Settings.
+
+## Book format
+
+See [Book format](BOOK_FORMAT.md) for the reader's supported markup and index
+structure. Newly converted books can use centered text and larger headings;
+inline bold and italic are not yet preserved on the badge.
 
 ## Sample book sources
 
